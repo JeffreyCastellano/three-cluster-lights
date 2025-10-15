@@ -1,5 +1,15 @@
 ![Three Cluster Lights banner](stories/header_img.jpg)
 
+## 🎮 Live Demo
+
+**[View Live Demo](https://three-cluster-lights.netlify.app)**
+
+## 📚 Documentation
+
+- **[Storybook Documentation](https://jeffreycastellano.github.io/three-cluster-lights/)** - Interactive examples and API documentation
+- **[NPM Package](https://www.npmjs.com/package/three-cluster-lights)** - Install via npm
+- **[GitHub Repository](https://github.com/jeffreycastellano/three-cluster-lights)** - Source code
+
 # three-cluster-lights - Library Components
 
 The core library files for the three-cluster-lights system - a high-performance WebAssembly-powered clustered lighting solution for Three.js. 
