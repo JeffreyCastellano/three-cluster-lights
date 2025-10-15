@@ -18,6 +18,8 @@ This library enables thousands of light supporting point lights, rect area light
 
 This is only relevant if you plan on building from the source. Otherwise the npm package is far easier to consume.
 
+*Note: There a few bugs on the near end of the frustum that need to be worked out but are easily avoidable.
+
 ## 📁 Library Structure
 
 ```
