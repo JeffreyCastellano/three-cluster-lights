@@ -68,7 +68,7 @@ export class SceneManager {
         true // performance mode
       );
       // Disable super-master by default (3rd render pass overhead > early-out savings)
-      this.sharedClusterLightingSystem.useSuperMaster = true;
+      this.sharedClusterLightingSystem.useSuperMaster = false;
       this.sharedClusterLightingSystem.resize();
 
       // Get reference to assign query for GPU total calculation
