@@ -1,6 +1,6 @@
 {
   "name": "three-cluster-lights",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "WebAssembly-powered clustered lighting system for Three.js",
   "type": "module",
   "main": "./index.js",

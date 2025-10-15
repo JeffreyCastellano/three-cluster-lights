@@ -532,7 +532,11 @@ export class LightTypesScene extends BaseScene {
         max: 20,
         step: 0.5
       }).on('change', (ev) => {
-        this.lightsSystem.updateRectSize(this.selectedLightIndex, ev.value, light.height);
+        const currentLights = this.lightsSystem.exportLights();
+        const currentLight = currentLights[this.selectedLightIndex] || light;
+        const updatedHeight = currentLight?.height ?? light.height;
+        this.lightsSystem.updateRectSize(this.selectedLightIndex, ev.value, updatedHeight);
+        light.width = ev.value;
       });
 
       const heightParams = { height: light.height };
@@ -542,7 +546,11 @@ export class LightTypesScene extends BaseScene {
         max: 20,
         step: 0.5
       }).on('change', (ev) => {
-        this.lightsSystem.updateRectSize(this.selectedLightIndex, light.width, ev.value);
+        const currentLights = this.lightsSystem.exportLights();
+        const currentLight = currentLights[this.selectedLightIndex] || light;
+        const updatedWidth = currentLight?.width ?? light.width;
+        this.lightsSystem.updateRectSize(this.selectedLightIndex, updatedWidth, ev.value);
+        light.height = ev.value;
       });
 
       const decayParams = { decay: light.decay };

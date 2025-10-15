@@ -144,9 +144,3 @@ This example is provided under the same MIT license as the main library.
 - **NPM Package**: [three-cluster-lights](https://www.npmjs.com/package/three-cluster-lights)
 - **GitHub**: [Repository](https://github.com/jeffreycastellano/three-cluster-lights)
 
----
-
-<div align="center">
-Built with ❤️ using three-cluster-lights
-</div>
-

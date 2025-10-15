@@ -314,43 +314,51 @@ ALWAYS_INLINE static void rotateAroundAxis(Vec4 *v, const Vec4 *axis, float angl
 
 // Build stable orthonormal basis from normal
 ALWAYS_INLINE static void buildOrthonormalBasis(const Vec4 *normal, Vec4 *tangent, Vec4 *bitangent) {
-    // Choose helper vector based on smallest component to avoid instability
-    Vec4 helper;
-    float ax = fabsf(normal->x);
-    float ay = fabsf(normal->y);
-    float az = fabsf(normal->z);
-
-    if (ax < ay) {
-        if (ax < az) {
-            helper = (Vec4){1.0f, 0.0f, 0.0f, 0.0f};
-        } else {
-            helper = (Vec4){0.0f, 0.0f, 1.0f, 0.0f};
-        }
-    } else {
-        if (ay < az) {
-            helper = (Vec4){0.0f, 1.0f, 0.0f, 0.0f};
-        } else {
-            helper = (Vec4){0.0f, 0.0f, 1.0f, 0.0f};
-        }
+    // Prefer world-up alignment so width maps to a horizontal axis when possible
+    Vec4 reference = (Vec4){0.0f, 1.0f, 0.0f, 0.0f};
+    if (fabsf(normal->y) >= 0.999f) {
+        reference = (Vec4){1.0f, 0.0f, 0.0f, 0.0f};
     }
 
-    // Tangent = normalize(cross(normal, helper))
-    tangent->x = normal->y * helper.z - normal->z * helper.y;
-    tangent->y = normal->z * helper.x - normal->x * helper.z;
-    tangent->z = normal->x * helper.y - normal->y * helper.x;
+    // Tangent = normalize(cross(reference, normal))
+    tangent->x = reference.y * normal->z - reference.z * normal->y;
+    tangent->y = reference.z * normal->x - reference.x * normal->z;
+    tangent->z = reference.x * normal->y - reference.y * normal->x;
+
     float len = sqrtf(tangent->x * tangent->x + tangent->y * tangent->y + tangent->z * tangent->z);
+    if (len < 1e-6f) {
+        // Fallback reference if normal nearly matches primary helper
+        reference = (Vec4){0.0f, 0.0f, 1.0f, 0.0f};
+        tangent->x = reference.y * normal->z - reference.z * normal->y;
+        tangent->y = reference.z * normal->x - reference.x * normal->z;
+        tangent->z = reference.x * normal->y - reference.y * normal->x;
+        len = sqrtf(tangent->x * tangent->x + tangent->y * tangent->y + tangent->z * tangent->z);
+    }
+
     if (len > 0.0f) {
         float inv = 1.0f / len;
         tangent->x *= inv;
         tangent->y *= inv;
         tangent->z *= inv;
+    } else {
+        tangent->x = 1.0f;
+        tangent->y = 0.0f;
+        tangent->z = 0.0f;
     }
     tangent->w = 0.0f;
 
-    // Bitangent = cross(tangent, normal)
-    bitangent->x = tangent->y * normal->z - tangent->z * normal->y;
-    bitangent->y = tangent->z * normal->x - tangent->x * normal->z;
-    bitangent->z = tangent->x * normal->y - tangent->y * normal->x;
+    // Bitangent = normalize(cross(normal, tangent))
+    bitangent->x = normal->y * tangent->z - normal->z * tangent->y;
+    bitangent->y = normal->z * tangent->x - normal->x * tangent->z;
+    bitangent->z = normal->x * tangent->y - normal->y * tangent->x;
+
+    float bitLen = sqrtf(bitangent->x * bitangent->x + bitangent->y * bitangent->y + bitangent->z * bitangent->z);
+    if (bitLen > 0.0f) {
+        float invBit = 1.0f / bitLen;
+        bitangent->x *= invBit;
+        bitangent->y *= invBit;
+        bitangent->z *= invBit;
+    }
     bitangent->w = 0.0f;
 }
 
@@ -2497,27 +2505,8 @@ EMSCRIPTEN_KEEPALIVE void updateRectLightNormal(int idx, float nx, float ny, flo
             l->normal.z = nz / len;
             l->baseNormal = l->normal;
 
-            // Recompute tangent frame
-            Vec4 absNormal = {fabsf(nx/len), fabsf(ny/len), fabsf(nz/len), 0};
-            Vec4 helper;
-            if (absNormal.x < absNormal.y) {
-                helper = absNormal.x < absNormal.z ? (Vec4){1,0,0,0} : (Vec4){0,0,1,0};
-            } else {
-                helper = absNormal.y < absNormal.z ? (Vec4){0,1,0,0} : (Vec4){0,0,1,0};
-            }
-
-            l->tangent.x = l->normal.y * helper.z - l->normal.z * helper.y;
-            l->tangent.y = l->normal.z * helper.x - l->normal.x * helper.z;
-            l->tangent.z = l->normal.x * helper.y - l->normal.y * helper.x;
-            float tlen = sqrtf(l->tangent.x*l->tangent.x + l->tangent.y*l->tangent.y + l->tangent.z*l->tangent.z);
-            l->tangent.x /= tlen;
-            l->tangent.y /= tlen;
-            l->tangent.z /= tlen;
-
-            l->bitangent.x = l->normal.y * l->tangent.z - l->normal.z * l->tangent.y;
-            l->bitangent.y = l->normal.z * l->tangent.x - l->normal.x * l->tangent.z;
-            l->bitangent.z = l->normal.x * l->tangent.y - l->normal.y * l->tangent.x;
-
+            // Recompute tangent frame with consistent helper alignment
+            buildOrthonormalBasis(&l->normal, &l->tangent, &l->bitangent);
             l->baseTangent = l->tangent;
             l->baseBitangent = l->bitangent;
             l->dirty |= DIRTY_PARAMS;
