@@ -1,0 +1,58 @@
+{
+  "name": "three-cluster-lights",
+  "private": false,
+  "version": "0.2.0",
+  "description": "High-performance clustered lighting system for Three.js powered by WebAssembly",
+  "keywords": [
+    "threejs",
+    "three",
+    "webassembly",
+    "wasm",
+    "lighting",
+    "cluster",
+    "clustered-lighting",
+    "simd",
+    "performance",
+    "gpu"
+  ],
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": {
+      "import": "./lib/index.js",
+      "types": "./lib/index.d.ts"
+    },
+    "./styles/performance-tracker.css": "./lib/performance-tracker.css",
+    "./lib/*": "./lib/*"
+  },
+  "files": [
+    "lib",
+    "README.md"
+  ],
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "postbuild": "node scripts/generate-headers.mjs",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.14.0",
+    "@types/three": "^0.180.0",
+    "three": "^0.180.0",
+    "three-mesh-bvh": "^0.9.1",
+    "tweakpane": "^4.0.5",
+    "tweakpane-draggable-theme": "^1.0.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "vite": "^5.4.14",
+    "vite-plugin-top-level-await": "^1.5.0",
+    "vite-plugin-wasm": "^3.5.0"
+  },
+  "prettier": {
+    "singleQuote": true,
+    "semi": false,
+    "printWidth": 90,
+    "jsxSingleQuote": true
+  }
+}

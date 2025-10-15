@@ -1,0 +1,84 @@
+{
+  "name": "three-cluster-lights",
+  "version": "1.0.0",
+  "description": "WebAssembly-powered clustered lighting system for Three.js",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": {
+      "import": "./index.js",
+      "types": "./index.d.ts"
+    },
+    "./core": {
+      "import": "./core/cluster-lighting-system.js",
+      "types": "./core/cluster-lighting-system.d.ts"
+    },
+    "./performance": {
+      "import": "./performance/performance-tracker.js",
+      "types": "./performance/performance-tracker.d.ts"
+    },
+    "./utils": {
+      "import": "./utils/wasm-loader.js",
+      "types": "./utils/wasm-loader.d.ts"
+    },
+    "./visual": {
+      "import": "./visual/light-markers.js",
+      "types": "./visual/light-markers.d.ts"
+    },
+    "./wasm/cluster-lights-simd.wasm": "./wasm/cluster-lights-simd.wasm",
+    "./wasm/cluster-lights.wasm": "./wasm/cluster-lights.wasm"
+  },
+  "scripts": {
+    "build:wasm": "emcc -O3 -flto --no-entry -o wasm/cluster-lights.wasm wasm/cluster-lights.c -s STANDALONE_WASM -s \"EXPORTED_FUNCTIONS=['_init', '_sort', '_add', '_addFast', '_addSpot', '_addRect', '_addPointWithAnimation', '_addSpotWithAnimation', '_addRectWithAnimation', '_update', '_getCameraMatrix', '_getPointLightTexture', '_getSpotLightTexture', '_getRectLightTexture', '_reset', '_setViewFrustum', '_setLODBias', '_getLODBias', '_removePointLight', '_removeSpotLight', '_removeRectLight', '_updatePointLightPosition', '_updatePointLightColor', '_updatePointLightIntensity', '_updatePointLightRadius', '_updatePointLightDecay', '_updatePointLightVisibility', '_updatePointLightAnimation', '_updateSpotLightPosition', '_updateSpotLightDirection', '_updateSpotLightAngle', '_updateSpotLightColor', '_updateSpotLightIntensity', '_updateSpotLightRadius', '_updateSpotLightDecay', '_updateSpotLightVisibility', '_updateSpotLightAnimation', '_getPointLightCount', '_getSpotLightCount', '_getRectLightCount', '_getHasAnimatedLights', '_getPointLightLOD', '_getSpotLightLOD', '_getRectLightLOD', '_bulkAddPointLights', '_bulkAddLights', '_getPointLightCountPtr', '_getSpotLightCountPtr', '_getRectLightCountPtr', '_getPointLightsArrayPtr', '_getSpotLightsArrayPtr', '_getRectLightsArrayPtr']\" -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=48MB -s MAXIMUM_MEMORY=128MB -s TOTAL_STACK=1MB",
+    "build:wasm-simd": "emcc -O3 -flto -msimd128 --no-entry -o wasm/cluster-lights-simd.wasm wasm/cluster-lights.c -s STANDALONE_WASM -s \"EXPORTED_FUNCTIONS=['_init', '_sort', '_add', '_addFast', '_addSpot', '_addRect', '_addPointWithAnimation', '_addSpotWithAnimation', '_addRectWithAnimation', '_update', '_getCameraMatrix', '_getPointLightTexture', '_getSpotLightTexture', '_getRectLightTexture', '_reset', '_setViewFrustum', '_setLODBias', '_getLODBias', '_removePointLight', '_removeSpotLight', '_removeRectLight', '_updatePointLightPosition', '_updatePointLightColor', '_updatePointLightIntensity', '_updatePointLightRadius', '_updatePointLightDecay', '_updatePointLightVisibility', '_updatePointLightAnimation', '_updateSpotLightPosition', '_updateSpotLightDirection', '_updateSpotLightAngle', '_updateSpotLightColor', '_updateSpotLightIntensity', '_updateSpotLightRadius', '_updateSpotLightDecay', '_updateSpotLightVisibility', '_updateSpotLightAnimation', '_getPointLightCount', '_getSpotLightCount', '_getRectLightCount', '_getHasAnimatedLights', '_getPointLightLOD', '_getSpotLightLOD', '_getRectLightLOD', '_bulkAddPointLights', '_bulkAddLights', '_getPointLightCountPtr', '_getSpotLightCountPtr', '_getRectLightCountPtr', '_getPointLightsArrayPtr', '_getSpotLightsArrayPtr', '_getRectLightsArrayPtr']\" -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=48MB -s MAXIMUM_MEMORY=128MB -s TOTAL_STACK=1MB -s AGGRESSIVE_VARIABLE_ELIMINATION=1 -s DISABLE_EXCEPTION_CATCHING=1 -msse -msse2 -msse3 -msse4.1 --closure 1 -fno-rtti -fno-exceptions",
+    "build:wasm:all": "npm run build:wasm && npm run build:wasm-simd",
+    "build:asm": "emcc -O2 -s WASM=0 -s EXPORTED_RUNTIME_METHODS=['ccall','cwrap'] -s MODULARIZE=1 -s EXPORT_NAME='Module' -o wasm/cluster-lights-asm.js wasm/cluster-lights.c -s \"EXPORTED_FUNCTIONS=['_init', '_sort', '_add', '_addFast', '_addSpot', '_addRect', '_addPointWithAnimation', '_addSpotWithAnimation', '_addRectWithAnimation', '_update', '_getCameraMatrix', '_getPointLightTexture', '_getSpotLightTexture', '_getRectLightTexture', '_reset', '_setViewFrustum', '_setLODBias', '_getLODBias', '_removePointLight', '_removeSpotLight', '_removeRectLight', '_updatePointLightPosition', '_updatePointLightColor', '_updatePointLightIntensity', '_updatePointLightRadius', '_updatePointLightDecay', '_updatePointLightVisibility', '_updatePointLightAnimation', '_updateSpotLightPosition', '_updateSpotLightDirection', '_updateSpotLightAngle', '_updateSpotLightColor', '_updateSpotLightIntensity', '_updateSpotLightRadius', '_updateSpotLightDecay', '_updateSpotLightVisibility', '_updateSpotLightAnimation', '_getPointLightCount', '_getSpotLightCount', '_getRectLightCount', '_getHasAnimatedLights', '_getPointLightLOD', '_getSpotLightLOD', '_getRectLightLOD', '_bulkAddPointLights', '_bulkAddLights']\" -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=48MB -s MAXIMUM_MEMORY=128MB",
+    "build:all": "npm run build:wasm:all && npm run build:asm",
+    "prepublishOnly": "npm run build:all"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "core/",
+    "performance/",
+    "utils/",
+    "visual/",
+    "wasm/",
+    "README.md",
+    "ORGANIZATION_SUMMARY.md"
+  ],
+  "keywords": [
+    "three",
+    "threejs",
+    "webgl",
+    "lighting",
+    "clustered",
+    "clustered-lighting",
+    "webassembly",
+    "wasm",
+    "simd",
+    "performance",
+    "3d",
+    "graphics",
+    "gpu",
+    "real-time",
+    "rendering"
+  ],
+  "author": "",
+  "license": "MIT",
+  "peerDependencies": {
+    "three": ">=0.170.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "bugs": {
+    "url": ""
+  },
+  "homepage": "",
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
+

@@ -1,0 +1,90 @@
+import { Meta } from '@storybook/addon-docs';
+
+<Meta title="Introduction" />
+
+# Three Cluster Lights
+
+A high-performance WebAssembly-powered clustered lighting system for Three.js.
+
+## Features
+
+- **32,000+ Dynamic Lights**: Support for massive light counts with WASM acceleration
+- **Multiple Light Types**: Point, Spot, and Rectangle (area) lights
+- **Rich Animations**: Circular, wave, flicker, pulse, rotation, and more
+- **Automatic LOD**: Level-of-detail system for optimal performance
+- **WebAssembly**: SIMD-optimized for maximum speed
+- **GPU Clustering**: Efficient light assignment using compute shaders
+
+## Examples
+
+Explore the different examples in the sidebar to see the full capabilities of the cluster lighting system:
+
+- **Basic Example**: Grid of lights with mixed animations
+- **Light Types**: Interactive demo of all light types
+- **Point Lights**: Omnidirectional lighting
+- **Spot Lights**: Directional cone lighting
+- **Rectangle Lights**: Area lighting with rotation
+- **Animations**: Showcase of all animation types
+- **Stress Tests**: Performance testing with thousands of lights
+
+## Quick Start
+
+```javascript
+import { ClusterLightingSystem, loadWasm, LightType } from 'three-cluster-lights';
+import * as THREE from 'three';
+
+// Initialize renderer
+const renderer = new THREE.WebGLRenderer();
+
+// Load WASM module
+const wasm = await loadWasm({ preferSIMD: true });
+
+// Create lighting system
+const lights = new ClusterLightingSystem(
+  renderer,
+  wasm,
+  0.1,    // near plane
+  200,    // far plane
+  32, 16, 32,  // cluster resolution
+  true    // performance mode
+);
+
+// Add a light
+lights.addLight({
+  type: LightType.POINT,
+  position: new THREE.Vector3(0, 5, 0),
+  color: new THREE.Color(1, 0.5, 0),
+  intensity: 10,
+  radius: 15,
+  animation: {
+    circular: { speed: 1, radius: 5 }
+  }
+});
+
+// Patch materials
+lights.patchMaterial(yourMaterial);
+
+// In render loop
+function animate() {
+  const time = clock.getElapsedTime();
+  lights.update(time, camera);
+  renderer.render(scene, camera);
+}
+```
+
+## Performance
+
+The system is optimized for real-time rendering with thousands of dynamic lights:
+
+- 16×16 (256 lights): Recommended for most scenes
+- 32×32 (1,024 lights): High-end GPUs
+- 64×64 (4,096 lights): Extreme stress testing
+- 90×90 (32,000+ lights): Maximum capacity
+
+## Browser Support
+
+- **WebAssembly**: Required (all modern browsers)
+- **SIMD**: Optional, supported in Chrome 91+, Firefox 89+, Safari 16.4+
+- **WebGL 2**: Required for optimal performance
+
+

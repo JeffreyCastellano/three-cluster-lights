@@ -1,0 +1,15 @@
+{
+  "routes": [],
+  "headers": [
+    {
+      "path": "/*.wasm",
+      "name": "Content-Type",
+      "value": "application/wasm"
+    },
+    {
+      "path": "/*.wasm",
+      "name": "Cache-Control",
+      "value": "public, max-age=31536000, immutable"
+    }
+  ]
+}

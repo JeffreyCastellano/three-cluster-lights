@@ -1,0 +1,22 @@
+# Development files
+.DS_Store
+*.log
+.vscode/
+.idea/
+
+# Source maps (if any)
+*.map
+
+# Test files
+__tests__/
+*.test.js
+*.spec.js
+
+# Documentation source
+docs/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
