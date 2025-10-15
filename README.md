@@ -1,3 +1,5 @@
+![Three Cluster Lights banner](stories/header_img.jpg)
+
 # three-cluster-lights - Library Components
 
 The core library files for the three-cluster-lights system - a high-performance WebAssembly-powered clustered lighting solution for Three.js. 
