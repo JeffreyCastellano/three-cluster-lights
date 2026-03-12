@@ -62,6 +62,9 @@ export default defineConfig({
       }
     }
   },
+  optimizeDeps: {
+    exclude: ['three-cluster-lights']
+  },
   server: {
     port: 3005,
     open: '/index.html'

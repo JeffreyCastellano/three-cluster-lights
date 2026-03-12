@@ -3,7 +3,7 @@ import { Vector3, PlaneGeometry, MeshStandardMaterial, Mesh, AmbientLight, Batch
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { BaseScene } from './BaseScene.js';
-import { PulseTarget } from '../../lib/index.js';
+import { PulseTarget } from 'three-cluster-lights';
 
 export class BasicExampleScene extends BaseScene {
   constructor(renderer, lightsSystem) {

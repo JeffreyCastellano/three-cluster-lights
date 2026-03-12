@@ -1,7 +1,7 @@
 // LightTypesScene.js - Showcase different light types with full interactive controls
 import { Vector3, Color, TorusGeometry, MeshStandardMaterial, Mesh, BoxGeometry, SphereGeometry, PlaneGeometry, MathUtils } from 'three';
 import { BaseScene } from './BaseScene.js';
-import { PulseTarget } from '../../lib/index.js';
+import { PulseTarget } from 'three-cluster-lights';
 
 export class LightTypesScene extends BaseScene {
   constructor(renderer, lightsSystem) {

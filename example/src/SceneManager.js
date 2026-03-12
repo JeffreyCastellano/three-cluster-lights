@@ -3,7 +3,7 @@ import { Pane } from 'tweakpane';
 import { PMREMGenerator, NoToneMapping, LinearToneMapping, ReinhardToneMapping, CineonToneMapping, ACESFilmicToneMapping } from 'three';
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
 import { applyTheme } from 'tweakpane-draggable-theme';
-import { ClusterLightingSystem, GPUQuery, loadWasm, AdaptiveTileSpan } from '../lib/index.js';
+import { ClusterLightingSystem, GPUQuery, loadWasm, AdaptiveTileSpan } from 'three-cluster-lights';
 import { BasicExampleScene } from './scenes/BasicExampleScene.js';
 import { LightPlaygroundScene } from './scenes/LightPlaygroundScene.js';
 import { LightTypesScene } from './scenes/LightTypesScene.js';

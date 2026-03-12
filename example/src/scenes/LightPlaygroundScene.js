@@ -3,7 +3,7 @@ import { Vector3, Color, BoxGeometry, MeshStandardMaterial, Mesh, TorusGeometry,
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { BaseScene } from './BaseScene.js';
-import { PulseTarget, LinearMode } from '../../lib/index.js';
+import { PulseTarget, LinearMode } from 'three-cluster-lights';
 
 export class LightPlaygroundScene extends BaseScene {
   constructor(renderer, lightsSystem) {

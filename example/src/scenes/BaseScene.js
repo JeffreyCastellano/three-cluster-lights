@@ -1,7 +1,7 @@
 // BaseScene.js - Base class for all scenes
 import { Scene, PerspectiveCamera, Vector3, AmbientLight, Clock } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { LightMarkers } from '../../lib/index.js';
+import { LightMarkers } from 'three-cluster-lights';
 
 export class BaseScene {
   constructor(renderer, lightsSystem, options = {}) {

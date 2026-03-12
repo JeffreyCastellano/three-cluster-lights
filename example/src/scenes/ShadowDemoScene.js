@@ -1,7 +1,7 @@
 // ShadowDemoScene.js - Demonstrates clustered shadow system with budget-based rendering
 import { Vector3, Color, MeshStandardMaterial, Mesh, BoxGeometry, SphereGeometry, PlaneGeometry, CylinderGeometry, MathUtils } from 'three';
 import { BaseScene } from './BaseScene.js';
-import { PulseTarget } from '../../lib/index.js';
+import { PulseTarget } from 'three-cluster-lights';
 
 export class ShadowDemoScene extends BaseScene {
   constructor(renderer, lightsSystem) {

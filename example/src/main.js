@@ -1,7 +1,7 @@
 // main.js - Entry point for Three.js multi-scene implementation
 import { WebGLRenderer,ACESFilmicToneMapping } from 'three';
 import { SceneManager } from './SceneManager.js';
-import { PerformanceTracker } from '../lib/index.js';
+import { PerformanceTracker } from 'three-cluster-lights';
 
 try {
   // Create renderer
