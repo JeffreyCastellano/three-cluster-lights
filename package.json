@@ -1,6 +1,6 @@
 {
   "name": "three-cluster-lights",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "Thousands of clustered lighting for Three.js",
   "type": "module",
   "main": "./index.js",
@@ -76,10 +76,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/jeffreycastellano/three-cluster-lights.git"
+    "url": "https://github.com/JeffreyCastellano/three-cluster-lights.git"
   },
   "bugs": {
-    "url": "https://github.com/jeffreycastellano/three-cluster-lights/issues"
+    "url": "https://github.com/JeffreyCastellano/three-cluster-lights/issues"
   },
   "homepage": "https://jeffreycastellano.github.io/three-cluster-lights/",
   "engines": {
