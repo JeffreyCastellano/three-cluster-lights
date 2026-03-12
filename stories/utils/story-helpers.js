@@ -47,13 +47,13 @@ export function createRenderer(container) {
 
 export function createCamera(aspect = 1) {
   const camera = new PerspectiveCamera(45, aspect, 0.1, 200);
-  camera.position.set(20, 15, 20);
+  camera.position.set(14, 7, 16);
   return camera;
 }
 
 export function createControls(camera, domElement) {
   const controls = new OrbitControls(camera, domElement);
-  controls.target.set(0, 3, 0);
+  controls.target.set(0, 1.5, 0);
   controls.enableDamping = true;
   controls.dampingFactor = 0.05;
   controls.maxDistance = 50;

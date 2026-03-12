@@ -18,8 +18,7 @@ export const SingleLight = () => {
     width: 800,
     height: 600,
     setup: async ({ scene, camera, lightsSystem, controls }) => {
-      // Setup camera - further away for better view
-      camera.position.set(15, 12, 15);
+      camera.position.set(10, 5, 12);
       controls.target.set(0, 1, 0);
       controls.update();
 
@@ -82,7 +81,7 @@ export const ThreeLights = () => {
     width: 800,
     height: 600,
     setup: async ({ scene, camera, lightsSystem, controls }) => {
-      camera.position.set(15, 12, 15);
+      camera.position.set(10, 5, 12);
       controls.target.set(0, 1, 0);
       controls.update();
 

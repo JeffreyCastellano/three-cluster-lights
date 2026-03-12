@@ -20,7 +20,7 @@ export const Wave = () => {
     width: 1200,
     height: 600,
     setup: async ({ scene, camera, lightsSystem, controls }) => {
-      camera.position.set(20, 15, 20);
+      camera.position.set(16, 6, 14);
       controls.target.set(0, 2, 0);
 
       // Add floor
@@ -83,7 +83,7 @@ export const Circular = () => {
     width: 1200,
     height: 600,
     setup: async ({ scene, camera, lightsSystem, controls }) => {
-      camera.position.set(0, 15, 20);
+      camera.position.set(8, 6, 16);
       controls.target.set(0, 2, 0);
 
       // Add floor
@@ -153,8 +153,8 @@ export const Pulse = () => {
     width: 1200,
     height: 600,
     setup: async ({ scene, camera, lightsSystem, controls }) => {
-      camera.position.set(0, 10, 15);
-      controls.target.set(0, 2, 0);
+      camera.position.set(4, 5, 14);
+      controls.target.set(0, 1.5, 0);
 
       // Add floor
       const groundGeometry = new PlaneGeometry(40, 40);
@@ -225,7 +225,7 @@ export const Flicker = () => {
     width: 1200,
     height: 600,
     setup: async ({ scene, camera, lightsSystem, controls }) => {
-      camera.position.set(0, 8, 12);
+      camera.position.set(4, 4, 12);
       controls.target.set(0, 2, 0);
 
       // Add floor
@@ -297,8 +297,8 @@ export const Combined = () => {
     width: 1200,
     height: 800,
     setup: async ({ scene, camera, lightsSystem, controls }) => {
-      camera.position.set(25, 20, 25);
-      controls.target.set(0, 3, 0);
+      camera.position.set(18, 8, 20);
+      controls.target.set(0, 1.5, 0);
 
       // Add floor
       const groundGeometry = new PlaneGeometry(50, 50);

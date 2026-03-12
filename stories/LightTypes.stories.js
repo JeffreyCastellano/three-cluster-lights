@@ -23,8 +23,8 @@ export const PointLights = () => {
     width: 1200,
     height: 800,
     setup: async ({ scene, camera, lightsSystem, controls }) => {
-      camera.position.set(15, 10, 15);
-      controls.target.set(0, 2, 0);
+      camera.position.set(12, 6, 14);
+      controls.target.set(0, 1.5, 0);
 
       // Add floor
       const groundGeometry = new PlaneGeometry(40, 40);
@@ -113,8 +113,8 @@ export const SpotLights = () => {
     width: 1200,
     height: 800,
     setup: async ({ scene, camera, lightsSystem, controls }) => {
-      camera.position.set(20, 15, 20);
-      controls.target.set(0, 3, 0);
+      camera.position.set(14, 6, 16);
+      controls.target.set(0, 1.5, 6);
 
       // Add floor
       const groundGeometry = new PlaneGeometry(140, 140);
@@ -220,8 +220,8 @@ export const RectangleLights = () => {
     width: 1200,
     height: 800,
     setup: async ({ scene, camera, lightsSystem, controls }) => {
-      camera.position.set(0, 15, 25);
-      controls.target.set(0, 3, 0);
+      camera.position.set(6, 6, 18);
+      controls.target.set(0, 3, -2);
 
       // Add floor
       const groundGeometry = new PlaneGeometry(40, 40);
@@ -313,8 +313,8 @@ export const MixedLights = () => {
     width: 1200,
     height: 800,
     setup: async ({ scene, camera, lightsSystem, controls }) => {
-      camera.position.set(25, 20, 25);
-      controls.target.set(0, 3, 0);
+      camera.position.set(18, 8, 20);
+      controls.target.set(0, 1.5, -2);
       controls.maxDistance = 100;
 
       // Add floor

@@ -113,8 +113,8 @@ const Template = (args) => {
     height: 800,
     setup: async ({ scene, camera, lightsSystem, controls }) => {
       // Setup camera
-      camera.position.set(args.gridSize * 2, 15, args.gridSize * 2);
-      controls.target.set(args.gridSize * 2, 3, args.gridSize * 2);
+      camera.position.set(args.gridSize * 2, args.gridSize * 0.6 + 4, args.gridSize * 2);
+      controls.target.set(args.gridSize * 2, 1.5, args.gridSize * 2);
       controls.maxDistance = 200;
       controls.update();
 
