@@ -1,6 +1,6 @@
 {
   "name": "three-cluster-lights",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Thousands of clustered lighting for Three.js",
   "type": "module",
   "main": "./index.js",
