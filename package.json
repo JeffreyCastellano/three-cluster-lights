@@ -1,6 +1,6 @@
 {
   "name": "three-cluster-lights",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Thousands of clustered lighting for Three.js",
   "type": "module",
   "main": "./index.js",
@@ -40,7 +40,7 @@
     "build:all": "npm run build:wasm:all && npm run build:asm",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build -o storybook-static",
-    "prepublishOnly": "npm run build:all"
+    "prepublishOnly": "npm run build"
   },
   "files": [
     "index.js",
