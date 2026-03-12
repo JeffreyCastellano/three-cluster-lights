@@ -200,6 +200,21 @@ export class ClusterLightingSystem {
   sortNow(): void;
   forceClusterUpdate(): void;
 
+  // Shadow system
+  setShadowMode(mode: 'off' | 'atlas' | 'screenspace' | 0 | 1 | 2): void;
+  getShadowMode(): number;
+  setShadowsEnabled(enabled: boolean): void;
+  getShadowsEnabled(): boolean;
+  setShadowBudget(maxLights?: number, perFrame?: number): void;
+  setLightShadow(type: 'point' | 'spot' | 'rect' | 0 | 1 | 2, index: number, castsShadow: boolean, intensity?: number): void;
+  setStochasticPCF(enabled: boolean): void;
+  getStochasticPCF(): boolean;
+  setQuadShadows(enabled: boolean): void;
+  getQuadShadows(): boolean;
+
+  // Morton code ordering
+  setMorton3D(enabled: boolean): void;
+
   // Main update
   update(time: number, camera: THREE.Camera, scene?: THREE.Scene): void;
   resize(): void;
@@ -217,8 +232,11 @@ export class ClusterLightingSystem {
 // ============================================================================
 
 export const lights_physical_pars_fragment: string;
+export const lights_physical_pars_shadow: string;
+export const lights_physical_pars_stochastic: string;
 export const lights_fragment_begin: string;
 export const lights_fragment_begin_optimized: string;
+export const lights_fragment_begin_stochastic: string;
 
 export interface ShaderVariant {
   condition: (lights: {
@@ -241,6 +259,23 @@ export const ShaderVariants: {
 
 export function getListMaterial(): THREE.RawShaderMaterial;
 export function getMasterMaterial(): THREE.RawShaderMaterial;
+
+// ============================================================================
+// Shadow Atlas
+// ============================================================================
+
+export interface ShadowAtlasOptions {
+  atlasSize?: number;
+  tileSize?: number;
+  shadowsPerFrame?: number;
+  shadowBias?: number;
+}
+
+export class ShadowAtlas {
+  constructor(renderer: THREE.WebGLRenderer, options?: ShadowAtlasOptions);
+  update(wasmExports: any, scene: THREE.Scene, camera: THREE.Camera, candidateCount: number): number;
+  dispose(): void;
+}
 
 // ============================================================================
 // Performance Monitoring

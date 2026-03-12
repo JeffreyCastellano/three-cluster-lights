@@ -10,6 +10,7 @@ import { LightTypesScene } from './scenes/LightTypesScene.js';
 import { StressTest2DScene } from './scenes/StressTest2DScene.js';
 import { StressTest3DScene } from './scenes/StressTest3DScene.js';
 import { LightPhysicsScene } from './scenes/LightPhysicsScene.js';
+import { ShadowDemoScene } from './scenes/ShadowDemoScene.js';
 
 export class SceneManager {
   constructor(container, renderer, cpuTracker = null) {
@@ -135,6 +136,7 @@ export class SceneManager {
       types: new LightTypesScene(this.renderer, this.sharedClusterLightingSystem),
       stressTest2D: new StressTest2DScene(this.renderer, this.sharedClusterLightingSystem),
       stressTest3D: new StressTest3DScene(this.renderer, this.sharedClusterLightingSystem),
+      shadowDemo: new ShadowDemoScene(this.renderer, this.sharedClusterLightingSystem),
     };
 
     // Initialize all scenes and pass shadeQuery
@@ -165,6 +167,7 @@ export class SceneManager {
         { text: '💡 Light Types', value: 'types' },
         { text: '⚡ 2D Stress Test', value: 'stressTest2D' },
         { text: '🧊 3D Stress Test', value: 'stressTest3D' },
+        { text: '🌑 Shadow Demo', value: 'shadowDemo' },
       ],
       value: this.sceneParams.scene
     }).on('change', (ev) => {

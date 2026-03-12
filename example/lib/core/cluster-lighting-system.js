@@ -1,7 +1,8 @@
 // cluster-lighting-system.js - Complete WASM clustered lighting system
-import { Color, Vector3, Vector4, Vector2, BufferGeometry, Float32BufferAttribute, WebGLRenderTarget, RGBAFormat, FloatType, NearestFilter, UnsignedByteType, RedIntegerFormat, UnsignedShortType, UnsignedIntType, MeshBasicMaterial, Scene, Mesh, DataTexture, MathUtils, PlaneGeometry, PerspectiveCamera, Matrix4 } from 'three';
-import { getListMaterial, getMasterMaterial, getSuperMasterMaterial, ShaderVariants, lights_physical_pars_fragment } from './cluster-shaders.js';
+import { Color, Vector3, Vector4, Vector2, BufferGeometry, Float32BufferAttribute, WebGLRenderTarget, RGBAFormat, FloatType, NearestFilter, UnsignedByteType, RedIntegerFormat, UnsignedShortType, UnsignedIntType, MeshBasicMaterial, Scene, Mesh, DataTexture, MathUtils, PlaneGeometry, PerspectiveCamera, Matrix4, MeshDepthMaterial, BasicDepthPacking, NoBlending } from 'three';
+import { getListMaterial, getMasterMaterial, getSuperMasterMaterial, ShaderVariants, lights_physical_pars_fragment, lights_physical_pars_shadow, lights_physical_pars_stochastic, lights_fragment_begin_stochastic } from './cluster-shaders.js';
 import { GPUQuery } from '../performance/performance-metrics.js';
+import { ShadowAtlas } from './shadow-atlas.js';
 
 // Light type enumeration
 export const LightType = {
@@ -119,6 +120,7 @@ export class ClusterLightingSystem {
     this.cameraMatrixVersion = 0;
     this.lastCameraMatrixVersion = -1;
     this.cameraChanged = false;
+    this.lightsDirty = true; // Start dirty so first frame uploads
 
     // Advanced cluster caching
     this.clusterDirtyFlags = {
@@ -233,16 +235,63 @@ export class ClusterLightingSystem {
     this.superMasterTexture = { value: null };
     this.listTexture = { value: null };
     this.size = { value: new Vector2(1, 1) };
+
+    // Shadow system
+    this._renderingShadows = false;
+    // Shadow mode: 0=off, 1=atlas, 2=screen-space
+    this._shadowMode = 0;
+    this.shadowMode = { value: 0 };
+
+    // Atlas shadow system (lazy-allocated on first use to save ~16MB GPU memory)
+    this.shadowAtlas = null;
+    this._shadowAtlasOptions = {
+      atlasSize: 2048,
+      tileSize: 512,
+      shadowsPerFrame: 4,
+      shadowBias: 0.005,
+      enabled: false
+    };
+    this.shadowAtlasTexture = { value: null };
+    this.shadowDataTexture = { value: null };
+    this.shadowCandidateCount = { value: 0 };
+
+    // JS-side shadow tracking (used when WASM shadow functions aren't available)
+    this._shadowFlags = { point: [], spot: [], rect: [] }; // { castsShadow, intensity } per light
+    this._shadowCandidates = []; // Computed each frame by _selectShadowCandidatesJS
+    this._shadowStale = [];      // Per-candidate stale flags
+    this._shadowBudget = 8;
+    this._shadowsPerFrame = 4;
+    this._hasWasmShadows = false; // Set true after first successful WASM shadow call
+
+    // Screen-space shadow depth pre-pass
+    this._depthTarget = null;
+    this._depthMaterial = new MeshDepthMaterial({
+      depthPacking: BasicDepthPacking,
+      blending: NoBlending
+    });
+    this.sceneDepthTexture = { value: null };
+    this.shadowNear = { value: near };
+    this.shadowFar = { value: far };
+    this.shadowResolution = { value: new Vector2(1, 1) };
+    this.shadowProjMatrix = { value: new Matrix4() };
+    this.screenSpaceShadowIntensity = { value: 0.5 };
+
+    // STB-inspired options (Stochastic Tile-Based Lighting, SIGGRAPH 2025)
+    this._useStochasticPCF = false;  // Rotated 4-tap PCF with temporal jitter
+    this._useQuadShadows = false;    // Evaluate shadows per 2×2 pixel quad (~4x cheaper)
+    this._useStochasticSampling = false; // Fixed-cost per-tile light sampling
+    this._stochasticSamplesPerTile = { value: 4 }; // Lights sampled per tile
+
+    // Dirty tracking for depth pre-pass
+    this._depthDirty = true;
+    this._lastCamMatrixElements = new Float32Array(16);
+    this._lastSceneRevision = -1;
     
-    // Performance tuning: Max tiles a light can span (prevents assignment overdraw)
-    // Lower = better performance (less overdraw), Higher = better quality (less light clipping)
-    // Recommended: 8-16 tiles. Below 8 causes tile boundary artifacts. At 36x18 clusters, 12 tiles = ~1/3 screen width
-    this.maxTileSpan = { value: 12.0 };
-    
+
+
     // Super-master hierarchical early-out control
     // undefined = auto heuristic (enabled when sliceParams.w >= 24, ~6K+ lights)
     // true = force enable, false = force disable
-    // TEMPORARILY DISABLED to test if it's causing performance regression
     this.useSuperMaster = false;
     
     // Create proxy geometry
@@ -254,7 +303,7 @@ export class ClusterLightingSystem {
     
     ["pointLightTexture", "spotLightTexture", "rectLightTexture", "lightCounts",
      "pointLightTextureWidth", "spotLightTextureWidth", "rectLightTextureWidth",
-     "batchCount", "sliceParams", "clusterParams", "nearZ", "projectionMatrix", "viewMatrix", "maxTileSpan"].forEach((k) => {
+     "batchCount", "sliceParams", "clusterParams", "nearZ", "projectionMatrix", "viewMatrix"].forEach((k) => {
       this.proxy.material.uniforms[k] = this[k];
     });
     
@@ -318,6 +367,13 @@ export class ClusterLightingSystem {
     }
   }
 
+
+  // Enable 3D Morton codes for scenes with significant vertical light distribution
+  setMorton3D(enabled) {
+    if (this.wasm.exports.setMorton3D) {
+      this.wasm.exports.setMorton3D(enabled ? 1 : 0);
+    }
+  }
 
   // Force cluster update on next frame (useful after bulk operations)
   forceClusterUpdate() {
@@ -425,18 +481,10 @@ export class ClusterLightingSystem {
     return this.wasm.exports.getLODBias();
   }
 
-  // Performance tuning: Control max tile span to prevent assignment overdraw
-  setMaxTileSpan(span) {
-    this.maxTileSpan.value = Math.max(8.0, Math.min(32.0, span)); // Clamp: min 8 to avoid artifacts, max 32
-  }
-
-  getMaxTileSpan() {
-    return this.maxTileSpan.value;
-  }
-
-  // ────────────────────────────────────────────────────────────
-  //         SHADOW SYSTEM REMOVED - NO LONGER USED
-  // ────────────────────────────────────────────────────────────
+  // maxTileSpan removed — lights now use full radius (matches cl2 reference).
+  // Stubs kept so AdaptiveTileSpan / UI code doesn't crash.
+  setMaxTileSpan() {}
+  getMaxTileSpan() { return Infinity; }
 
   _computeClusterParams() {
     const v = this.clusterParams.value;
@@ -474,24 +522,66 @@ export class ClusterLightingSystem {
     u.spotLightTextureWidth = this.spotLightTextureWidth;
     u.rectLightTextureWidth = this.rectLightTextureWidth;
 
+    s.defines = s.defines || {};
+
     // Enable super-master early-out if texture is present
     if (this.superMasterTexture.value) {
-      s.defines = s.defines || {};
       s.defines.USE_SUPER_MASTER = '';
     } else {
-      // Clean up define if super-master is disabled
-      if (s.defines && s.defines.USE_SUPER_MASTER !== undefined) {
-        delete s.defines.USE_SUPER_MASTER;
-      }
+      delete s.defines.USE_SUPER_MASTER;
     }
 
-    // Use the current shader variant or default
-    const fragmentCode = this._currentFragmentShader || ShaderVariants.FULL_FEATURED.fragment;
-    
+    // Shadow uniforms and GLSL — only when shadows are active
+    const shadowsActive = this._shadowMode !== 0;
+    if (shadowsActive) {
+      s.defines.USE_CLUSTER_SHADOWS = '';
+      u.shadowMode = this.shadowMode;
+      u.shadowAtlas = this.shadowAtlasTexture;
+      u.shadowDataTexture = this.shadowDataTexture;
+      u.shadowCandidateCount = this.shadowCandidateCount;
+      u.sceneDepthTexture = this.sceneDepthTexture;
+      u.shadowNear = this.shadowNear;
+      u.shadowFar = this.shadowFar;
+      u.shadowResolution = this.shadowResolution;
+      u.shadowProjMatrix = this.shadowProjMatrix;
+      u.screenSpaceShadowIntensity = this.screenSpaceShadowIntensity;
+
+      if (this._useStochasticPCF) {
+        s.defines.USE_STOCHASTIC_PCF = '';
+      } else {
+        delete s.defines.USE_STOCHASTIC_PCF;
+      }
+      if (this._useQuadShadows) {
+        s.defines.USE_QUAD_SHADOWS = '';
+      } else {
+        delete s.defines.USE_QUAD_SHADOWS;
+      }
+    } else {
+      delete s.defines.USE_CLUSTER_SHADOWS;
+      delete s.defines.USE_STOCHASTIC_PCF;
+      delete s.defines.USE_QUAD_SHADOWS;
+    }
+
+    // Stochastic light sampling — uses a separate shader string (not #ifdef)
+    const useStochastic = this._useStochasticSampling;
+    if (useStochastic) {
+      u.stochasticSamplesPerTile = this._stochasticSamplesPerTile;
+    }
+
+    // Use stochastic variant when enabled, otherwise current variant or default
+    const fragmentCode = useStochastic
+      ? lights_fragment_begin_stochastic
+      : (this._currentFragmentShader || ShaderVariants.FULL_FEATURED.fragment);
+
+    // Build pars fragment: base uniforms + conditional shadow/stochastic code
+    let parsCode = lights_physical_pars_fragment;
+    if (shadowsActive) parsCode += lights_physical_pars_shadow;
+    if (useStochastic) parsCode += lights_physical_pars_stochastic;
+
     s.fragmentShader = s.fragmentShader
       .replace('#include <lights_physical_pars_fragment>', `
         #include <lights_physical_pars_fragment>
-        ${lights_physical_pars_fragment}
+        ${parsCode}
       `)
       .replace('#include <lights_fragment_begin>', `
         #include <lights_fragment_begin>
@@ -610,15 +700,17 @@ export class ClusterLightingSystem {
       this.lightTypeMap.set(globalIndex, { type: 'point', typeIndex });
       
       this.hasPointLights = true;
-      
+      this.pointLightCount = this.pointLights.length;
+      this.sortDeferred = true;
+
       // Update animated lights flag if needed
       if (light.animation) {
         this.hasAnimatedLights = true;
       }
-      
+
       return globalIndex;
     }
-    
+
     return -1;
   }
 
@@ -878,6 +970,7 @@ export class ClusterLightingSystem {
 
     // Mark position change for cluster update
     this.clusterDirtyFlags.lightPositionsChanged = true;
+    this.lightsDirty = true;
 
     // Defer sorting until render (performance optimization)
     // Skip sorting entirely if we have very few lights (sorting is pointless and causes index corruption)
@@ -909,6 +1002,7 @@ export class ClusterLightingSystem {
       this.wasm.exports.updateRectLightColor(typeIndex, color.r, color.g, color.b);
       this.rectLights[typeIndex].color = color;
     }
+    this.lightsDirty = true;
   }
 
   updateLightIntensity(globalIndex, intensity) {
@@ -927,6 +1021,7 @@ export class ClusterLightingSystem {
       this.wasm.exports.updateRectLightIntensity(typeIndex, intensity);
       this.rectLights[typeIndex].intensity = intensity;
     }
+    this.lightsDirty = true;
   }
 
   updateLightRadius(globalIndex, radius) {
@@ -945,6 +1040,7 @@ export class ClusterLightingSystem {
       this.wasm.exports.updateRectLightRadius(typeIndex, radius);
       this.rectLights[typeIndex].radius = radius;
     }
+    this.lightsDirty = true;
   }
 
   updateLightDecay(globalIndex, decay) {
@@ -963,6 +1059,7 @@ export class ClusterLightingSystem {
       this.wasm.exports.updateRectLightDecay(typeIndex, decay);
       this.rectLights[typeIndex].decay = decay;
     }
+    this.lightsDirty = true;
   }
 
   updateLightVisibility(globalIndex, visible) {
@@ -981,6 +1078,7 @@ export class ClusterLightingSystem {
       this.wasm.exports.updateRectLightVisibility(typeIndex, visible ? 1 : 0);
       this.rectLights[typeIndex].visible = visible;
     }
+    this.lightsDirty = true;
   }
 
   updateLightAnimation(globalIndex, animation) {
@@ -1028,6 +1126,7 @@ export class ClusterLightingSystem {
     
     this.hasAnimatedLights = this.wasm.exports.getHasAnimatedLights() > 0;
     this._updateFeatureFlags();
+    this.lightsDirty = true;
   }
 
   updateLightAnimationProperty(globalIndex, animationType, property, value) {
@@ -1101,6 +1200,7 @@ export class ClusterLightingSystem {
     
     this.wasm.exports.updateSpotLightDirection(mapping.typeIndex, direction.x, direction.y, direction.z);
     this.spotLights[mapping.typeIndex].direction = direction;
+    this.lightsDirty = true;
   }
 
   updateSpotAngle(globalIndex, angle, penumbra) {
@@ -1113,6 +1213,7 @@ export class ClusterLightingSystem {
     this.wasm.exports.updateSpotLightAngle(mapping.typeIndex, angle, validPenumbra);
     this.spotLights[mapping.typeIndex].angle = angle;
     this.spotLights[mapping.typeIndex].penumbra = validPenumbra;
+    this.lightsDirty = true;
   }
 
   updateRectSize(globalIndex, width, height) {
@@ -1127,6 +1228,7 @@ export class ClusterLightingSystem {
     const newRadius = Math.max(width, height) * 3;
     this.wasm.exports.updateRectLightRadius(mapping.typeIndex, newRadius);
     this.rectLights[mapping.typeIndex].radius = newRadius;
+    this.lightsDirty = true;
   }
 
   updateRectNormal(globalIndex, normal) {
@@ -1135,6 +1237,7 @@ export class ClusterLightingSystem {
 
     this.wasm.exports.updateRectLightNormal(mapping.typeIndex, normal.x, normal.y, normal.z);
     this.rectLights[mapping.typeIndex].normal = normal;
+    this.lightsDirty = true;
   }
 
   // Bulk update multiple lights by their indices without clearing
@@ -1209,6 +1312,12 @@ export class ClusterLightingSystem {
     this.lightTypeMap.clear();
     this.globalLightIndex = 0;
     this.hasAnimatedLights = false;
+
+    // Clear JS shadow tracking
+    this._shadowFlags.point = [];
+    this._shadowFlags.spot = [];
+    this._shadowFlags.rect = [];
+    this._shadowCandidates.length = 0;
 
     // Dispose old textures properly to prevent memory leaks
     if (this.pointLightTexture.value) {
@@ -1382,14 +1491,35 @@ export class ClusterLightingSystem {
         return;
       }
 
-      const wasmData = new Float32Array(
-        this.wasm.exports.memory.buffer,
-        wasmDataPtr,
-        actualFloats
-      );
-
-      // Copy into texture's data array
-      this.pointLightTexture.value.image.data.set(wasmData);
+      // Check if the texture data buffer is detached (happens when WASM memory grows)
+      const textureData = this.pointLightTexture.value.image.data;
+      if (textureData.buffer.byteLength === 0 || textureData.buffer !== this.wasm.exports.memory.buffer) {
+        // Buffer is detached or from old memory, dispose old and recreate texture
+        const oldPointTex = this.pointLightTexture.value;
+        if (oldPointTex) oldPointTex.dispose();
+        const wasmView = new Float32Array(
+          this.wasm.exports.memory.buffer,
+          wasmDataPtr,
+          actualFloats
+        );
+        this.pointLightTexture.value = new DataTexture(
+          wasmView,
+          pointCount * 2,
+          1,
+          RGBAFormat,
+          FloatType
+        );
+        this.pointLightTexture.value.minFilter = NearestFilter;
+        this.pointLightTexture.value.magFilter = NearestFilter;
+      } else {
+        // Buffer is still valid, just update it
+        const wasmData = new Float32Array(
+          this.wasm.exports.memory.buffer,
+          wasmDataPtr,
+          actualFloats
+        );
+        textureData.set(wasmData);
+      }
       this.pointLightTexture.value.needsUpdate = true;
     }
 
@@ -1435,7 +1565,9 @@ export class ClusterLightingSystem {
       // Check if the texture data buffer is detached (happens when WASM memory grows)
       const textureData = this.spotLightTexture.value.image.data;
       if (textureData.buffer.byteLength === 0 || textureData.buffer !== this.wasm.exports.memory.buffer) {
-        // Buffer is detached or from old memory, recreate texture
+        // Buffer is detached or from old memory, dispose old and recreate texture
+        const oldSpotTex = this.spotLightTexture.value;
+        if (oldSpotTex) oldSpotTex.dispose();
         const wasmView = new Float32Array(
           this.wasm.exports.memory.buffer,
           wasmDataPtr,
@@ -1504,7 +1636,9 @@ export class ClusterLightingSystem {
       // Check if the texture data buffer is detached (happens when WASM memory grows)
       const textureData = this.rectLightTexture.value.image.data;
       if (textureData.buffer.byteLength === 0 || textureData.buffer !== this.wasm.exports.memory.buffer) {
-        // Buffer is detached or from old memory, recreate texture
+        // Buffer is detached or from old memory, dispose old and recreate texture
+        const oldRectTex = this.rectLightTexture.value;
+        if (oldRectTex) oldRectTex.dispose();
         const wasmView = new Float32Array(
           this.wasm.exports.memory.buffer,
           wasmDataPtr,
@@ -1679,6 +1813,8 @@ export class ClusterLightingSystem {
       this._computeClusterParams();
       this.updateProxyGeometry();
       this.clearRenderTargets();
+      this._updateFeatureFlags();
+      this._updateClusterResolution();
       return;
     }
 
@@ -1842,6 +1978,8 @@ export class ClusterLightingSystem {
       this._computeClusterParams();
       this.updateProxyGeometry();
       this.clearRenderTargets();
+      this._updateFeatureFlags();
+      this._updateClusterResolution();
     } else {
       // When appending, just mark sorting as deferred
       // Don't call update() or updateLightTextures() - they'll fail with partial data
@@ -1866,6 +2004,8 @@ export class ClusterLightingSystem {
     this._computeClusterParams();
     this.updateProxyGeometry();
     this.clearRenderTargets();
+    this._updateFeatureFlags();
+    this._updateClusterResolution();
 
   }
 
@@ -2104,6 +2244,8 @@ export class ClusterLightingSystem {
     this._computeClusterParams();
     this.updateProxyGeometry();
     this.clearRenderTargets();
+    this._updateFeatureFlags();
+    this._updateClusterResolution();
 
   }
 
@@ -2113,19 +2255,29 @@ export class ClusterLightingSystem {
 
   update(time, camera, scene = null) {
     this.time.value = time;
-    this.currentViewMatrix = camera.matrixWorldInverse.elements;
 
     this.camera.copy(camera);
     this.camera.updateMatrixWorld();
-    
+
     this.nearZ.value = camera.near;
     this.projectionMatrix.value = camera.projectionMatrix;
     this.viewMatrix.value = camera.matrixWorldInverse;
 
-    // Efficient camera change detection using matrix version
-    if (camera.matrixWorldInverse.elements !== this.currentViewMatrix) {
+    // Camera change detection using element-wise comparison
+    const newElements = camera.matrixWorldInverse.elements;
+    let matrixChanged = !this.currentViewMatrix;
+    if (!matrixChanged) {
+      for (let i = 0; i < 16; i++) {
+        if (newElements[i] !== this.currentViewMatrix[i]) {
+          matrixChanged = true;
+          break;
+        }
+      }
+    }
+    if (matrixChanged) {
       this.cameraMatrixVersion++;
-      this.currentViewMatrix = camera.matrixWorldInverse.elements;
+      if (!this.currentViewMatrix) this.currentViewMatrix = new Float32Array(16);
+      this.currentViewMatrix.set(newElements);
     }
 
     this.cameraChanged = this.cameraMatrixVersion !== this.lastCameraMatrixVersion;
@@ -2146,6 +2298,14 @@ export class ClusterLightingSystem {
     if (this.sortDeferred && !this.hasAnimatedLights && totalLights > 2) {
       this.wasm.exports.sort();
       this.sortDeferred = false;
+    }
+
+    // Update frustum params for lateral culling (Perf 2)
+    if (camera.fov !== undefined && camera.aspect !== undefined && this.wasm.exports.setFrustumParams) {
+      const fovRad = camera.fov * Math.PI / 180;
+      const frustumTop = Math.tan(fovRad * 0.5);
+      const frustumRight = frustumTop * camera.aspect;
+      this.wasm.exports.setFrustumParams(frustumRight, frustumTop);
     }
 
     // Always update lights - the WASM code handles fast paths internally
@@ -2182,6 +2342,11 @@ export class ClusterLightingSystem {
 
           if (!usingZeroCopy) {
             // COPY MODE: Need to copy WASM data to texture buffer
+            // Check if buffer is detached (WASM memory grew) or too small (lights added)
+            if (this.pointLightTextureData.buffer.byteLength === 0 || actualFloats > this.pointLightTextureData.length) {
+              this.updateLightTextures();
+              return;
+            }
             const wasmData = new Float32Array(
               this.wasm.exports.memory.buffer,
               wasmDataPtr,
@@ -2204,23 +2369,74 @@ export class ClusterLightingSystem {
           }
         }
       }
-      // Always mark texture for GPU upload since view-space positions change every frame
-      // when the camera moves, regardless of whether lights are animated
-      if (pointCount > 0) {
+      // Only upload to GPU when something changed (Perf 3)
+      // View-space positions change when camera moves, lights animate, or properties change
+      if (pointCount > 0 && (this.cameraChanged || this.hasAnimatedLights || this.lightsDirty)) {
         this.pointLightTexture.value.needsUpdate = true;
       }
     }
 
-    // Always update spot/rect textures since view-space positions change with camera movement
-    if (this.spotLightTexture.value && this.spotLights.length > 0) {
+    // Only upload spot/rect textures when camera or lights changed (Perf 3)
+    const texturesDirty = this.cameraChanged || this.hasAnimatedLights || this.lightsDirty;
+    if (this.spotLightTexture.value && this.spotLightCount > 0 && texturesDirty) {
       this.spotLightTexture.value.needsUpdate = true;
     }
-    if (this.rectLightTexture.value && this.rectLights.length > 0) {
+    if (this.rectLightTexture.value && this.rectLightCount > 0 && texturesDirty) {
       this.rectLightTexture.value.needsUpdate = true;
     }
 
+    // Reset per-frame dirty flag (Perf 3)
+    this.lightsDirty = false;
 
     this.updateProxyGeometry();
+
+    // Shadow system (after WASM update, before renderTiles)
+    if (this._shadowMode === 1 && scene) {
+      // Atlas mode: use WASM candidate selection if available, otherwise JS fallback
+      let candidateCount = 0;
+      let shadowApi;
+
+      if (this.wasm.exports.selectShadowLights) {
+        candidateCount = this.wasm.exports.selectShadowLights();
+        shadowApi = this.wasm.exports;
+      } else {
+        candidateCount = this._selectShadowCandidatesJS(camera);
+        shadowApi = this._getShadowShim();
+      }
+
+      if (candidateCount > 0) {
+        this._ensureShadowAtlas();
+        this._renderingShadows = true;
+        try {
+          const activeShadows = this.shadowAtlas.update(
+            shadowApi, scene, camera, candidateCount
+          );
+          this._updateShadowUniforms(activeShadows);
+        } catch (e) {
+          console.warn('[ClusterLightingSystem] Shadow atlas error:', e);
+          this.shadowCandidateCount.value = 0;
+        } finally {
+          this._renderingShadows = false;
+        }
+      } else {
+        this.shadowCandidateCount.value = 0;
+      }
+    } else if (this._shadowMode === 2 && scene) {
+      // Screen-space only: no atlas, just set candidate count to 0
+      this.shadowCandidateCount.value = 0;
+    }
+
+    // Depth prepass for screen-space shadows (mode 2) and atlas fallback (mode 1)
+    if ((this._shadowMode === 1 || this._shadowMode === 2) && scene) {
+      this._renderingShadows = true;
+      try {
+        this._renderDepthPrepass(scene, camera);
+      } catch (e) {
+        console.warn('[ClusterLightingSystem] Depth prepass error:', e);
+      } finally {
+        this._renderingShadows = false;
+      }
+    }
 
     const totalCount = this.pointLights.length + this.spotLights.length + this.rectLights.length;
     if (totalCount > 0) {
@@ -2228,7 +2444,312 @@ export class ClusterLightingSystem {
     }
   }
 
+  // ────────────────────────────────────────────────────────────
+  //                      SHADOW SYSTEM
+  // ────────────────────────────────────────────────────────────
+
+  _renderDepthPrepass(scene, camera) {
+    // Dirty check: skip re-render if camera and scene unchanged
+    const camEls = camera.matrixWorld.elements;
+    let camDirty = false;
+    for (let i = 0; i < 16; i++) {
+      if (camEls[i] !== this._lastCamMatrixElements[i]) { camDirty = true; break; }
+    }
+    // Scene version tracks adds/removes; lightsDirty tracks light movement
+    const sceneRev = scene.children.length;
+    const sceneDirty = sceneRev !== this._lastSceneRevision || this.lightsDirty;
+
+    if (!camDirty && !sceneDirty && !this._depthDirty && this._depthTarget) {
+      // Nothing changed — reuse existing depth buffer, just update projection uniform
+      this.shadowProjMatrix.value.copy(camera.projectionMatrix);
+      return;
+    }
+
+    const size = this.renderer.getDrawingBufferSize(new Vector2());
+    const w = size.x;
+    const h = size.y;
+
+    // Create or resize depth target at actual framebuffer resolution
+    if (!this._depthTarget || this._depthTarget.width !== w || this._depthTarget.height !== h) {
+      if (this._depthTarget) this._depthTarget.dispose();
+      this._depthTarget = new WebGLRenderTarget(w, h, {
+        type: FloatType,
+        format: RGBAFormat,
+        minFilter: NearestFilter,
+        magFilter: NearestFilter
+      });
+    }
+
+    // Render depth to color buffer via MeshDepthMaterial
+    const oldRT = this.renderer.getRenderTarget();
+    const oldOverride = scene.overrideMaterial;
+
+    scene.overrideMaterial = this._depthMaterial;
+    this.renderer.setRenderTarget(this._depthTarget);
+    this.renderer.clear();
+    this.renderer.render(scene, camera);
+
+    scene.overrideMaterial = oldOverride;
+    this.renderer.setRenderTarget(oldRT);
+
+    // Update uniforms — sample color attachment (depth written to RGB)
+    this.sceneDepthTexture.value = this._depthTarget.texture;
+    this.shadowNear.value = camera.near;
+    this.shadowFar.value = camera.far;
+    this.shadowProjMatrix.value.copy(camera.projectionMatrix);
+    this.shadowResolution.value.set(w, h);
+
+    // Store state for next frame's dirty check
+    this._lastCamMatrixElements.set(camEls);
+    this._lastSceneRevision = sceneRev;
+    this._depthDirty = false;
+  }
+
+  // Lazy-allocate ShadowAtlas on first use (saves ~16MB GPU memory when shadows unused)
+  _ensureShadowAtlas() {
+    if (!this.shadowAtlas) {
+      this.shadowAtlas = new ShadowAtlas(this.renderer, this._shadowAtlasOptions);
+    }
+    return this.shadowAtlas;
+  }
+
+  _updateShadowUniforms(activeShadows) {
+    const atlas = this._ensureShadowAtlas();
+    this.shadowAtlasTexture.value = atlas.atlasTarget.depthTexture;
+    this.shadowDataTexture.value = atlas.dataTexture;
+    this.shadowCandidateCount.value = activeShadows;
+  }
+
+  // JS-side shadow candidate selection (fallback when WASM shadow functions unavailable)
+  _selectShadowCandidatesJS(camera) {
+    const candidates = this._shadowCandidates;
+    candidates.length = 0;
+    this._shadowStale.length = 0;
+
+    const viewMatrix = camera.matrixWorldInverse;
+    const ve = viewMatrix.elements;
+
+    // Gather all shadow-casting lights with view-space transform
+    const lightArrays = [
+      { arr: this.pointLights, flags: this._shadowFlags.point, type: 0 },
+      { arr: this.spotLights, flags: this._shadowFlags.spot, type: 1 },
+      { arr: this.rectLights, flags: this._shadowFlags.rect, type: 2 },
+    ];
+
+    for (const { arr, flags, type } of lightArrays) {
+      for (let i = 0; i < arr.length; i++) {
+        const f = flags[i];
+        if (!f || !f.castsShadow) continue;
+
+        const p = arr[i].position;
+        const px = p.x, py = p.y, pz = p.z;
+
+        // Transform to view space
+        const vx = ve[0] * px + ve[4] * py + ve[8]  * pz + ve[12];
+        const vy = ve[1] * px + ve[5] * py + ve[9]  * pz + ve[13];
+        const vz = ve[2] * px + ve[6] * py + ve[10] * pz + ve[14];
+
+        // Skip lights behind camera
+        if (-vz < 0.1) continue;
+
+        const dist = Math.sqrt(vx * vx + vy * vy + vz * vz);
+        const radius = arr[i].radius || 10;
+        const intensity = arr[i].intensity || 1;
+
+        // Importance: brighter + closer + larger = higher priority
+        const importance = (intensity * radius) / (dist * dist + 1);
+
+        candidates.push({
+          type, index: i, importance,
+          viewX: vx, viewY: vy, viewZ: vz,
+          radius, shadowIntensity: f.intensity
+        });
+      }
+    }
+
+    // Sort by importance descending, cap to budget
+    candidates.sort((a, b) => b.importance - a.importance);
+    if (candidates.length > this._shadowBudget) candidates.length = this._shadowBudget;
+
+    // Initialize stale flags (all stale on first frame)
+    for (let i = 0; i < candidates.length; i++) {
+      this._shadowStale[i] = 1;
+    }
+
+    return candidates.length;
+  }
+
+  // Build a shim object with the same API as WASM exports for shadow-atlas.js
+  _getShadowShim() {
+    if (this._shadowShimObj) return this._shadowShimObj;
+
+    const self = this;
+    this._shadowShimObj = {
+      getShadowCandidateType(i)       { return self._shadowCandidates[i]?.type ?? 0; },
+      getShadowCandidateIndex(i)      { return self._shadowCandidates[i]?.index ?? 0; },
+      getShadowCandidateImportance(i) { return self._shadowCandidates[i]?.importance ?? 0; },
+      getShadowCandidateViewX(i)      { return self._shadowCandidates[i]?.viewX ?? 0; },
+      getShadowCandidateViewY(i)      { return self._shadowCandidates[i]?.viewY ?? 0; },
+      getShadowCandidateViewZ(i)      { return self._shadowCandidates[i]?.viewZ ?? 0; },
+      getShadowCandidateRadius(i)     { return self._shadowCandidates[i]?.radius ?? 10; },
+      setShadowStale(i, v)            { self._shadowStale[i] = v; },
+      isShadowStale(i)                { return self._shadowStale[i] === 1; },
+      getPointLightShadowIntensity(i) { return self._shadowFlags.point[i]?.intensity ?? 0; },
+      getSpotLightShadowIntensity(i)  { return self._shadowFlags.spot[i]?.intensity ?? 0; },
+      getRectLightShadowIntensity(i)  { return self._shadowFlags.rect[i]?.intensity ?? 0; },
+    };
+    return this._shadowShimObj;
+  }
+
+  /**
+   * Set shadow mode: 'off', 'atlas', or 'screenspace'
+   */
+  setShadowMode(mode) {
+    const prev = this._shadowMode;
+    if (mode === 'off' || mode === 0) {
+      this._shadowMode = 0;
+      this.shadowMode.value = 0;
+      if (this.shadowAtlas) this.shadowAtlas.enabled = false;
+      // Clean up screen-space depth resources
+      if (this._depthTarget) {
+        this._depthTarget.dispose();
+        this._depthTarget = null;
+      }
+      this.sceneDepthTexture.value = null;
+      this._depthDirty = true;
+    } else if (mode === 'atlas' || mode === 1) {
+      this._shadowMode = 1;
+      this.shadowMode.value = 1;
+      this._ensureShadowAtlas().enabled = true;
+    } else if (mode === 'screenspace' || mode === 2) {
+      this._shadowMode = 2;
+      this.shadowMode.value = 2;
+      if (this.shadowAtlas) this.shadowAtlas.enabled = false;
+      this._depthDirty = true;
+    }
+    // Force material recompilation when switching to/from off
+    if ((prev === 0) !== (this._shadowMode === 0)) {
+      for (const mat of this.materialsToUpdate) {
+        mat.needsUpdate = true;
+      }
+    }
+  }
+
+  getShadowMode() {
+    return this._shadowMode === 0 ? 'off' : this._shadowMode === 1 ? 'atlas' : 'screenspace';
+  }
+
+  setScreenSpaceShadowIntensity(intensity) {
+    this.screenSpaceShadowIntensity.value = Math.max(0, Math.min(1, intensity));
+  }
+
+  getScreenSpaceShadowIntensity() {
+    return this.screenSpaceShadowIntensity.value;
+  }
+
+  // Legacy API — maps to shadow mode
+  setShadowsEnabled(enabled) {
+    if (enabled) {
+      // Default to atlas mode if just enabling
+      if (this._shadowMode === 0) this.setShadowMode('atlas');
+    } else {
+      this.setShadowMode('off');
+    }
+  }
+
+  getShadowsEnabled() {
+    return this._shadowMode !== 0;
+  }
+
+  setShadowBudget(maxLights, perFrame) {
+    if (maxLights !== undefined) {
+      this._shadowBudget = maxLights;
+      if (this.wasm.exports.setMaxShadowBudget) this.wasm.exports.setMaxShadowBudget(maxLights);
+    }
+    if (perFrame !== undefined) {
+      this._shadowsPerFrame = perFrame;
+      if (this.wasm.exports.setShadowsPerFrame) this.wasm.exports.setShadowsPerFrame(perFrame);
+      if (this.shadowAtlas) this.shadowAtlas.shadowsPerFrame = perFrame;
+      else this._shadowAtlasOptions.shadowsPerFrame = perFrame;
+    }
+  }
+
+  // --- STB-inspired shadow quality options ---
+
+  /**
+   * Enable/disable stochastic PCF (rotated 4-tap kernel, TAA-convergent)
+   */
+  setStochasticPCF(enabled) {
+    if (this._useStochasticPCF === enabled) return;
+    this._useStochasticPCF = enabled;
+    for (const mat of this.materialsToUpdate) mat.needsUpdate = true;
+  }
+
+  getStochasticPCF() { return this._useStochasticPCF; }
+
+  /**
+   * Enable/disable quad-resolution shadow evaluation (~4x cheaper shadows)
+   */
+  setQuadShadows(enabled) {
+    if (this._useQuadShadows === enabled) return;
+    this._useQuadShadows = enabled;
+    for (const mat of this.materialsToUpdate) mat.needsUpdate = true;
+  }
+
+  getQuadShadows() { return this._useQuadShadows; }
+
+  /**
+   * Enable/disable stochastic light sampling (fixed-cost per-tile)
+   * @param {boolean} enabled
+   * @param {number} [samplesPerTile=4] - Number of lights sampled per tile (1-8)
+   */
+  setStochasticSampling(enabled, samplesPerTile) {
+    const changed = this._useStochasticSampling !== enabled;
+    this._useStochasticSampling = enabled;
+    if (samplesPerTile !== undefined) {
+      this._stochasticSamplesPerTile.value = Math.max(1, Math.min(8, samplesPerTile));
+    }
+    if (changed) {
+      for (const mat of this.materialsToUpdate) mat.needsUpdate = true;
+    }
+  }
+
+  getStochasticSampling() { return this._useStochasticSampling; }
+  getStochasticSamplesPerTile() { return this._stochasticSamplesPerTile.value; }
+
+  setLightShadow(type, index, castsShadow, intensity = 0.5) {
+    // Resolve global index to type-specific index if a mapping exists
+    const mapping = this.lightTypeMap.get(index);
+    const typeIndex = mapping ? mapping.typeIndex : index;
+
+    // Always track in JS (fallback for when WASM shadow functions unavailable)
+    const typeName = (type === 'point' || type === 0) ? 'point' :
+                     (type === 'spot' || type === 1) ? 'spot' : 'rect';
+    if (!this._shadowFlags[typeName][typeIndex]) {
+      this._shadowFlags[typeName][typeIndex] = { castsShadow: false, intensity: 0 };
+    }
+    this._shadowFlags[typeName][typeIndex].castsShadow = castsShadow;
+    this._shadowFlags[typeName][typeIndex].intensity = castsShadow ? intensity : 0;
+
+    // Also call WASM if available
+    if (type === 'point' || type === 0) {
+      if (this.wasm.exports.setPointLightShadow) this.wasm.exports.setPointLightShadow(typeIndex, castsShadow ? 1 : 0, intensity);
+    } else if (type === 'spot' || type === 1) {
+      if (this.wasm.exports.setSpotLightShadow) this.wasm.exports.setSpotLightShadow(typeIndex, castsShadow ? 1 : 0, intensity);
+    } else if (type === 'rect' || type === 2) {
+      if (this.wasm.exports.setRectLightShadow) this.wasm.exports.setRectLightShadow(typeIndex, castsShadow ? 1 : 0, intensity);
+    }
+  }
+
+  getShadowStats() {
+    if (!this.shadowAtlas) return { activeCandidates: 0, cacheSize: 0 };
+    return this.shadowAtlas.getStats();
+  }
+
   renderTiles(time) {
+    // Guard: prevent renderTiles during shadow atlas rendering (which calls renderer.render(scene))
+    if (this._renderingShadows) return;
+
     // Skip if no light textures are ready at all
     if (!this.pointLightTexture.value && !this.spotLightTexture.value && !this.rectLightTexture.value) {
       console.warn('[ClusterLightingSystem] Skipping renderTiles - no light textures initialized');
@@ -2427,7 +2948,22 @@ getSuperMasterTarget() {
 
 dispose() {
   this.clearRenderTargets();
-  
+
+  // Dispose shadow atlas
+  if (this.shadowAtlas) {
+    this.shadowAtlas.dispose();
+    this.shadowAtlasTexture.value = null;
+  }
+
+  // Dispose depth pre-pass
+  if (this._depthTarget) {
+    this._depthTarget.dispose();
+    this._depthTarget = null;
+  }
+  if (this._depthMaterial) {
+    this._depthMaterial.dispose();
+  }
+
   if (this.pointLightTexture.value) {
     this.pointLightTexture.value.dispose();
     this.pointLightTexture.value = null;

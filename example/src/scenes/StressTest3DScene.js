@@ -27,7 +27,9 @@ export class StressTest3DScene extends BaseScene {
       lightRadius: 100,
       lightIntensity: 10,
       lodBias: 1500.0,
-      lightType: 'point'
+      lightType: 'point',
+      shadowMode: 'screenspace',
+      shadowIntensity: 0.5
     };
 
     this.lightCountDisplay = { count: 0 };
@@ -97,7 +99,7 @@ export class StressTest3DScene extends BaseScene {
     this.options.pointGlowRadius = this.lightParams.glowRadius;
     
     // Add directional light for basic visibility
-    const light = new DirectionalLight(0xffffff, 3);
+    const light = new DirectionalLight(0xffffff, 0.3);
     light.position.set(1500, 1000, 0);
     this.scene.add(light);
     
@@ -168,6 +170,8 @@ export class StressTest3DScene extends BaseScene {
 
     this.lightsSystem.clearLights();
     this.lightsSystem.setLODBias(this.params.lodBias);
+    this.lightsSystem.setShadowMode(this.params.shadowMode);
+    this.lightsSystem.setScreenSpaceShadowIntensity(this.params.shadowIntensity);
 
     const desiredCount = this.params.lightCount;
     const startTime = performance.now();
@@ -339,6 +343,25 @@ export class StressTest3DScene extends BaseScene {
       if (this.lightMarkers) {
         this.lightMarkers.setMarkerScale(ev.value);
       }
+    });
+
+    // Shadow controls
+    const shadowFolder = pane.addFolder({ title: 'Shadows', expanded: true });
+
+    shadowFolder.addBinding(this.params, 'shadowMode', {
+      label: 'Mode',
+      options: { Off: 'off', 'Screen-Space': 'screenspace', Atlas: 'atlas' }
+    }).on('change', (ev) => {
+      this.lightsSystem.setShadowMode(ev.value);
+    });
+
+    shadowFolder.addBinding(this.params, 'shadowIntensity', {
+      label: 'Shadow Darkness',
+      min: 0,
+      max: 1,
+      step: 0.05
+    }).on('change', (ev) => {
+      this.lightsSystem.setScreenSpaceShadowIntensity(ev.value);
     });
 
   }

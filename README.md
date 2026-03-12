@@ -1,24 +1,12 @@
 ![Three Cluster Lights banner](stories/header_img.jpg)
 
-## 🎮 Live Demo
-
-**[View Live Demo](https://three-cluster-lights.netlify.app)**
-
-## 📚 Documentation
-
-- **[Storybook Documentation](https://jeffreycastellano.github.io/three-cluster-lights/)** - Interactive examples and API documentation
-- **[NPM Package](https://www.npmjs.com/package/three-cluster-lights)** - Install via npm
-- **[GitHub Repository](https://github.com/jeffreycastellano/three-cluster-lights)** - Source code
-
 # three-cluster-lights - Library Components
 
 The core library files for the three-cluster-lights system - a high-performance WebAssembly-powered clustered lighting solution for Three.js. 
 
-This library enables thousands of light supporting point lights, rect area lights and spotlights. No shadow casting. Point lights support goes up to 32,000 lights in the frustum.
+This library enables thousands of light supporting point lights, rect area lights and spotlights. Point lights support goes up to 32,000 lights in the frustum. Includes experimental shadow support via screen-space ray marching and atlas-based shadow maps.
 
 This is only relevant if you plan on building from the source. Otherwise the npm package is far easier to consume.
-
-*Note: There a few bugs on the near end of the frustum that need to be worked out but are easily avoidable.
 
 ## 📁 Library Structure
 
@@ -31,7 +19,8 @@ lib/
 │
 ├── core/                 # Core lighting system
 │   ├── cluster-lighting-system.js  # Main ClusterLightingSystem class
-│   └── cluster-shaders.js          # GLSL shaders and materials
+│   ├── cluster-shaders.js          # GLSL shaders and materials
+│   └── shadow-atlas.js             # Shadow atlas manager (experimental)
 │
 ├── performance/          # Performance monitoring and optimization
 │   ├── performance-metrics.js      # Metrics (GPUQuery, FPSMeter, etc.)
@@ -258,12 +247,14 @@ lights.updateLightAnimation(globalIndex, animationConfig);
 // Pulse animation
 lights.updatePulseSpeed(globalIndex, speed);
 lights.updatePulseAmount(globalIndex, amount);
-lights.updatePulseMinMax(globalIndex, min, max);
-lights.updatePulseTarget(globalIndex, PulseTarget.INTENSITY);
 
 // Flicker animation
-lights.updateFlickerAmount(globalIndex, amount);
+lights.updateFlickerIntensity(globalIndex, intensity);
 lights.updateFlickerSpeed(globalIndex, speed);
+
+// Wave animation
+lights.updateWaveSpeed(globalIndex, speed);
+lights.updateWaveAmplitude(globalIndex, amplitude);
 
 // Circular animation
 lights.updateCircularSpeed(globalIndex, speed);
@@ -271,7 +262,12 @@ lights.updateCircularRadius(globalIndex, radius);
 
 // Rotation animation
 lights.updateRotationSpeed(globalIndex, speed);
-lights.updateRotationAngle(globalIndex, angle);
+
+// Linear animation
+lights.updateLinearDuration(globalIndex, duration);
+
+// Generic property update
+lights.updateLightAnimationProperty(globalIndex, animationType, property, value);
 ```
 
 ##### Material Integration
@@ -289,6 +285,32 @@ lights.setDynamicClusters(enabled);
 lights.setLODBias(bias);
 const bias = lights.getLODBias();
 ```
+
+##### Shadows (Experimental)
+
+Two shadow modes are available: **screen-space** (ray marching against depth buffer) and **atlas** (budget-based shadow map atlas). Both can be used with any light count, but screen-space is better suited for high light counts where per-light shadow maps are impractical.
+
+```javascript
+// Set shadow mode: 'off', 'screenspace', or 'atlas'
+lights.setShadowMode('screenspace');
+
+// Screen-space shadow intensity (0–1, controls global shadow darkness)
+lights.setScreenSpaceShadowIntensity(0.5);
+const intensity = lights.getScreenSpaceShadowIntensity();
+
+// Atlas shadow budget (max simultaneous shadow-casting lights, renders per frame)
+lights.setShadowBudget(8, 4);
+
+// Enable per-light shadow casting (atlas mode)
+lights.setLightShadow('point', lightIndex, true, 0.7);
+
+// Query shadow stats
+const stats = lights.getShadowStats();
+// stats.activeCandidates, stats.cacheSize, stats.atlasSize,
+// stats.maxSlots, stats.usedSlots, stats.shadowsPerFrame
+```
+
+> **Note:** Shadow support is experimental and may change in future releases. Screen-space shadows use scale-relative thresholds and work across different scene sizes. Atlas shadows use a temporal cache with importance-based budget allocation.
 
 ##### Main Loop
 ```javascript
@@ -315,6 +337,7 @@ const markers = new LightMarkers(lightsSystem, {
   pointGlowRadius: 0.5,
   spotGlowRadius: 0.5,
   rectGlowRadius: 0.5,
+  markerScale: 0.05,
   colorOverride: null  // THREE.Vector3 or null
 });
 ```
@@ -330,6 +353,7 @@ markers.reinit(scene);         // Dispose and reinit
 markers.setVisible(visible);
 markers.setShowGlow(show);
 markers.setGlowRadius(radius);
+markers.setMarkerScale(scale);
 markers.setColorOverride(color);
 ```
 
@@ -442,25 +466,6 @@ LODLevel.SIMPLE  // 1 - Minimal quality
 LODLevel.MEDIUM  // 2 - Medium quality
 LODLevel.FULL    // 3 - Full quality
 ```
-
----
-
-## CSS Files
-
-### `performance-tracker.css`
-Styles for the performance stats overlay.
-
-**Usage in HTML:**
-```html
-<link rel="stylesheet" href="path/to/performance-tracker.css">
-```
-
-**Usage via npm:**
-```javascript
-import 'three-cluster-lights/styles/performance-tracker.css';
-```
-
-**Note:** When using `PerformanceTracker` class, CSS is automatically injected. Manual import only needed for custom implementations.
 
 ---
 
@@ -596,12 +601,12 @@ const wasm = await loadWasm({
 
 // Option 2: You can manually override this and load
 const wasm = await WebAssembly.instantiateStreaming(
-  fetch('/node_modules/three-cluster-lights/lib/wasm/lights-simd.wasm'),
+  fetch('/node_modules/three-cluster-lights/wasm/cluster-lights-simd.wasm'),
   { env: { emscripten_notify_memory_growth: () => {} } }
 );
 
 // Option 3: If you do this, you can set this up in various ways
-import wasmUrl from 'three-cluster-lights/wasm/lights-simd.wasm?url';
+import wasmUrl from 'three-cluster-lights/wasm/cluster-lights-simd.wasm?url';
 const wasm = await WebAssembly.instantiateStreaming(
   fetch(wasmUrl),
   { env: { emscripten_notify_memory_growth: () => {} } }
@@ -610,8 +615,8 @@ const wasm = await WebAssembly.instantiateStreaming(
 
 ### SIMD vs Standard
 
-- **lights-simd.wasm** - SIMD optimized, ~2x faster (recommended if supported)
-- **lights.wasm** - Standard version for wider browser compatibility
+- **cluster-lights-simd.wasm** - SIMD optimized, ~2x faster (recommended if supported)
+- **cluster-lights.wasm** - Standard version for wider browser compatibility
 
 The `loadWasm()` helper automatically detects SIMD support and loads the appropriate version.
 
@@ -637,20 +642,32 @@ npm run build:wasm:all
 ## File Organization
 
 ```
-lib/
-├── index.js                      # Main entry point
-├── cluster-lighting-system.js    # Core lighting system
-├── cluster-shaders.js            # GLSL shaders for clustering
-├── performance-metrics.js        # Low-level performance primitives
-├── performance-tracker.js        # High-level performance tracker
-├── light-markers.js              # Visual light position markers
-├── wasm-loader.js                # WASM loading helper
-├── performance-tracker.css       # Performance overlay styles
-├── wasm/                         # WebAssembly modules
-│   ├── lights.c                  # WASM source code
-│   ├── lights.wasm               # Compiled WASM (standard)
-│   └── lights-simd.wasm          # Compiled WASM (SIMD optimized)
-└── README.md                     # This file
+├── index.js                          # Main entry point
+├── index.d.ts                        # TypeScript definitions
+├── package.json                      # NPM package configuration
+├── README.md                         # This file
+│
+├── core/                             # Core lighting system
+│   ├── cluster-lighting-system.js    # Main ClusterLightingSystem class
+│   ├── cluster-shaders.js            # GLSL shaders and materials
+│   └── shadow-atlas.js              # Shadow atlas manager (experimental)
+│
+├── performance/                      # Performance monitoring
+│   ├── performance-metrics.js        # Low-level performance primitives
+│   ├── performance-tracker.js        # High-level performance tracker
+│   └── adaptive-tile-span.js        # Adaptive performance tuning
+│
+├── utils/                            # Utilities
+│   └── wasm-loader.js               # WASM loading with fallback
+│
+├── visual/                           # Visual debugging
+│   └── light-markers.js             # Visual light position markers
+│
+└── wasm/                             # WebAssembly modules
+    ├── cluster-lights.c              # WASM source code
+    ├── cluster-lights.wasm           # Compiled WASM (standard)
+    ├── cluster-lights-simd.wasm      # Compiled WASM (SIMD optimized)
+    └── cluster-lights-asm.js         # JavaScript fallback
 ```
 
 ---
@@ -680,8 +697,7 @@ For older browser support, the library will gracefully degrade performance monit
 
 ## Notes
 
-- CSS files are **optional** - only needed if using `PerformanceTracker` manually
-- JavaScript modules work independently of CSS
+- `PerformanceTracker` auto-injects its own CSS — no external stylesheet needed
 - WASM files are pre-compiled and ready to use
-- TypeScript definitions coming soon
+- Shadow support is experimental and may change in future releases
 - All file names use consistent kebab-case convention

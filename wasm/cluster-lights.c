@@ -133,6 +133,7 @@ typedef struct {
     Vec4 animOffset;    // Dynamic offset calculated each frame
     Vec4 worldPos;      // baseWorldPos + animOffset
     Vec4 color;         // rgb = color, w = intensity
+    Vec4 baseColor;     // rgb = base color, w = base intensity
     Vec4 direction;     // xyz = direction, w = unused
     Vec4 viewPos;       // xyz = view position, w = radius
     Vec4 viewDir;       // xyz = view direction, w = unused
@@ -141,6 +142,8 @@ typedef struct {
     float decay;
     float angle;
     float penumbra;
+    float cosAngle;          // Cached cosf(angle)
+    float cosAnglePenumbra;  // Cached cosf(angle - penumbra)
     uint32_t morton;
     uint8_t dirty;
     uint8_t visible;
@@ -154,6 +157,7 @@ typedef struct {
     Vec4 animOffset;    // Dynamic offset calculated each frame
     Vec4 worldPos;      // baseWorldPos + animOffset
     Vec4 color;         // rgb = color, w = intensity
+    Vec4 baseColor;     // rgb = base color, w = base intensity
     Vec4 size;          // x = width, y = height, z,w = unused
     Vec4 normal;        // xyz = normal, w = unused
     Vec4 tangent;       // xyz = tangent (right direction), w = unused
@@ -219,6 +223,11 @@ static int maxLights = 0;
 
 static int hasAnimatedLights = 0;
 static int needsSort = 0;
+static int animatedLightCount = 0; // Perf 5: Track animated count instead of rescanning
+
+// Frustum culling params (set from JS each frame)
+static float frustumRight = 1.0f;  // half-width at z=1
+static float frustumTop = 1.0f;    // half-height at z=1
 
 // Fast path flags
 static int hasPointLights = 0;
@@ -270,10 +279,44 @@ ALWAYS_INLINE static uint32_t interleaveBits(uint32_t x) {
     return x;
 }
 
+static int use3DMorton = 0;  // Default 2D (XZ) — better for flat scenes; use setMorton3D(1) for vertical
+
+ALWAYS_INLINE static uint32_t expandBits10(uint32_t v) {
+    v = (v | (v << 16)) & 0x030000FFu;
+    v = (v | (v <<  8)) & 0x0300F00Fu;
+    v = (v | (v <<  4)) & 0x030C30C3u;
+    v = (v | (v <<  2)) & 0x09249249u;
+    return v;
+}
+
 ALWAYS_INLINE static uint32_t computeMorton(float x, float z) {
     uint32_t xi = (uint32_t)x;
     uint32_t zi = (uint32_t)z;
     return interleaveBits(xi) | (interleaveBits(zi) << 1);
+}
+
+ALWAYS_INLINE static uint32_t computeMorton3D(float x, float y, float z) {
+    uint32_t ix = (uint32_t)((x + 5000.0f) * 0.1f) & 0x3FFu;
+    uint32_t iy = (uint32_t)((y + 5000.0f) * 0.1f) & 0x3FFu;
+    uint32_t iz = (uint32_t)((z + 5000.0f) * 0.1f) & 0x3FFu;
+    return expandBits10(ix) | (expandBits10(iy) << 1) | (expandBits10(iz) << 2);
+}
+
+ALWAYS_INLINE static uint32_t computeMortonAuto(float x, float y, float z) {
+    return use3DMorton ? computeMorton3D(x, y, z) : computeMorton(x, z);
+}
+
+// Frustum culling: depth + lateral (conservative sphere-vs-frustum)
+ALWAYS_INLINE static uint8_t isLightCulled(Vec4 *vp, float radius) {
+    // Depth culling
+    if (vp->z > radius - viewNear || vp->z < -viewFar - radius) return 1;
+    // Lateral culling
+    float absZ = fabsf(vp->z) + 0.001f;
+    if (vp->x > absZ * frustumRight + radius) return 1;
+    if (vp->x < -(absZ * frustumRight + radius)) return 1;
+    if (vp->y > absZ * frustumTop + radius) return 1;
+    if (vp->y < -(absZ * frustumTop + radius)) return 1;
+    return 0;
 }
 
 ALWAYS_INLINE static void worldToView(float x, float y, float z, float r, Vec4 *out) {
@@ -507,8 +550,9 @@ ALWAYS_INLINE static void processPointLightAnimation(PointLight *l, float time) 
 ALWAYS_INLINE static void processSpotLightAnimation(SpotLight *l, float time) {
     // Reset offset
     l->animOffset = (Vec4){0, 0, 0, 0};
-    
+
     // Start from base values
+    l->color = l->baseColor;
     l->direction = l->baseDir;
     l->worldPos.w = l->baseWorldPos.w;
     
@@ -564,17 +608,17 @@ ALWAYS_INLINE static void processSpotLightAnimation(SpotLight *l, float time) {
     
     // Flickering
     if (l->anim.flags & ANIM_FLICKER) {
-        float flicker = 1.0f + sinf(time * l->anim.flicker.speed + l->anim.flicker.seed) * 
-                              cosf(time * l->anim.flicker.speed * 1.7f + l->anim.flicker.seed * 2.3f) * 
+        float flicker = 1.0f + sinf(time * l->anim.flicker.speed + l->anim.flicker.seed) *
+                              cosf(time * l->anim.flicker.speed * 1.7f + l->anim.flicker.seed * 2.3f) *
                               l->anim.flicker.intensity;
-        l->color.w = l->color.w * clampf(flicker, 0.1f, 2.0f);
+        l->color.w = l->baseColor.w * clampf(flicker, 0.1f, 2.0f);
     }
-    
+
     // Pulsing
     if (l->anim.flags & ANIM_PULSE) {
         float pulse = 1.0f + sinf(time * l->anim.pulse.speed) * l->anim.pulse.amount;
         if (l->anim.pulse.target & PULSE_INTENSITY) {
-            l->color.w = l->color.w * pulse;
+            l->color.w = l->baseColor.w * pulse;
         }
         if (l->anim.pulse.target & PULSE_RADIUS) {
             l->worldPos.w = l->baseWorldPos.w * pulse;
@@ -585,8 +629,9 @@ ALWAYS_INLINE static void processSpotLightAnimation(SpotLight *l, float time) {
 ALWAYS_INLINE static void processRectLightAnimation(RectLight *l, float time) {
     // Reset offset
     l->animOffset = (Vec4){0, 0, 0, 0};
-    
+
     // Start from base values
+    l->color = l->baseColor;
     l->normal = l->baseNormal;
     l->worldPos.w = l->baseWorldPos.w;
     
@@ -645,17 +690,17 @@ ALWAYS_INLINE static void processRectLightAnimation(RectLight *l, float time) {
     
     // Flickering
     if (l->anim.flags & ANIM_FLICKER) {
-        float flicker = 1.0f + sinf(time * l->anim.flicker.speed + l->anim.flicker.seed) * 
-                              cosf(time * l->anim.flicker.speed * 1.7f + l->anim.flicker.seed * 2.3f) * 
+        float flicker = 1.0f + sinf(time * l->anim.flicker.speed + l->anim.flicker.seed) *
+                              cosf(time * l->anim.flicker.speed * 1.7f + l->anim.flicker.seed * 2.3f) *
                               l->anim.flicker.intensity;
-        l->color.w = l->color.w * clampf(flicker, 0.1f, 2.0f);
+        l->color.w = l->baseColor.w * clampf(flicker, 0.1f, 2.0f);
     }
-    
+
     // Pulsing
     if (l->anim.flags & ANIM_PULSE) {
         float pulse = 1.0f + sinf(time * l->anim.pulse.speed) * l->anim.pulse.amount;
         if (l->anim.pulse.target & PULSE_INTENSITY) {
-            l->color.w = l->color.w * pulse;
+            l->color.w = l->baseColor.w * pulse;
         }
     }
 }
@@ -746,10 +791,10 @@ static void updatePointLightsSIMD(float time) {
         );
         
         // Visibility culling
-        uint8_t culled0 = (l0->viewPos.z > l0->worldPos.w - viewNear || l0->viewPos.z < -viewFar - l0->worldPos.w) ? 1 : 0;
-        uint8_t culled1 = (l1->viewPos.z > l1->worldPos.w - viewNear || l1->viewPos.z < -viewFar - l1->worldPos.w) ? 1 : 0;
-        uint8_t culled2 = (l2->viewPos.z > l2->worldPos.w - viewNear || l2->viewPos.z < -viewFar - l2->worldPos.w) ? 1 : 0;
-        uint8_t culled3 = (l3->viewPos.z > l3->worldPos.w - viewNear || l3->viewPos.z < -viewFar - l3->worldPos.w) ? 1 : 0;
+        uint8_t culled0 = isLightCulled(&l0->viewPos, l0->worldPos.w);
+        uint8_t culled1 = isLightCulled(&l1->viewPos, l1->worldPos.w);
+        uint8_t culled2 = isLightCulled(&l2->viewPos, l2->worldPos.w);
+        uint8_t culled3 = isLightCulled(&l3->viewPos, l3->worldPos.w);
         
         // Update optimized texture data
         PointLightDataOptimized *ld0 = &pointLightTexture[i];
@@ -815,11 +860,8 @@ static void updatePointLightsSIMD(float time) {
         l->lodLevel = calculateLOD(l->viewPos.z, l->worldPos.w);
         
         // Visibility culling
-        uint8_t culled = 0;
-        if (l->viewPos.z > l->worldPos.w - viewNear || l->viewPos.z < -viewFar - l->worldPos.w) {
-            culled = 1;
-        }
-        
+        uint8_t culled = isLightCulled(&l->viewPos, l->worldPos.w);
+
         // Update texture data
         ld->positionRadius = l->viewPos;
         ld->colorDecayVisible = (Vec4){
@@ -1076,6 +1118,15 @@ EMSCRIPTEN_KEEPALIVE void setViewFrustum(float near, float far) {
     viewFar = far;
 }
 
+EMSCRIPTEN_KEEPALIVE void setFrustumParams(float right, float top) {
+    frustumRight = right;
+    frustumTop = top;
+}
+
+EMSCRIPTEN_KEEPALIVE void setMorton3D(int enabled) {
+    use3DMorton = enabled;
+}
+
 // ──────────────────────────────────────────────────────────────
 //                   LOD SETTINGS
 // ──────────────────────────────────────────────────────────────
@@ -1141,7 +1192,9 @@ EMSCRIPTEN_KEEPALIVE int addFast(float px, float py, float pz, float radius,
     l->castsShadow = 0;           // Default: no shadows
     l->shadowIntensity = 0.3f;    // Default: moderate shadow darkness
     l->anim.flags = ANIM_NONE;
-    
+    l->animOffset = (Vec4){0, 0, 0, 0};
+    l->dirty = DIRTY_ALL;
+
     needsSort = 1;
     hasPointLights = 1;
     
@@ -1223,10 +1276,11 @@ EMSCRIPTEN_KEEPALIVE int addPointWithAnimation(
         l->anim.pulse.target = pulseTarget;
         hasAnimatedLights = 1;
     }
-    
+
+    if (animFlags != ANIM_NONE) animatedLightCount++;
     needsSort = 1;
     hasPointLights = 1;
-    
+
     return pointLightCount++;
 }
 
@@ -1236,12 +1290,13 @@ EMSCRIPTEN_KEEPALIVE int addSpot(float px, float py, float pz, float radius,
                                  float angle, float penumbra,
                                  float decay, float intensity) {
     if (spotLightCount >= maxLights) return -1;
-    
+
     SpotLight *l = &spotLights[spotLightCount];
     l->baseWorldPos = (Vec4){px, py, pz, radius};
     l->animOffset = (Vec4){0, 0, 0, 0};
     l->worldPos = l->baseWorldPos;
-    l->color = (Vec4){r, g, b, intensity};
+    l->baseColor = (Vec4){r, g, b, intensity};
+    l->color = l->baseColor;
     
     float len = sqrtf(dx*dx + dy*dy + dz*dz);
     float inv = len > 0.f ? 1.f/len : 0.f;
@@ -1251,6 +1306,8 @@ EMSCRIPTEN_KEEPALIVE int addSpot(float px, float py, float pz, float radius,
     l->decay = decay;
     l->angle = angle;
     l->penumbra = penumbra;
+    l->cosAngle = cosf(angle);
+    l->cosAnglePenumbra = cosf(angle - penumbra);
     l->morton = computeMorton(px, pz);
     l->dirty = DIRTY_ALL;
     l->visible = 1;
@@ -1283,13 +1340,14 @@ EMSCRIPTEN_KEEPALIVE int addSpotWithAnimation(
     float pulseSpeed, float pulseAmount, uint8_t pulseTarget
 ) {
     if (spotLightCount >= maxLights) return -1;
-    
+
     SpotLight *l = &spotLights[spotLightCount];
     l->baseWorldPos = (Vec4){px, py, pz, radius};
     l->animOffset = (Vec4){0, 0, 0, 0};
     l->worldPos = l->baseWorldPos;
-    l->color = (Vec4){r, g, b, intensity};
-    
+    l->baseColor = (Vec4){r, g, b, intensity};
+    l->color = l->baseColor;
+
     float len = sqrtf(dx*dx + dy*dy + dz*dz);
     float inv = len > 0.f ? 1.f/len : 0.f;
     l->direction = (Vec4){dx*inv, dy*inv, dz*inv, 0.f};
@@ -1298,11 +1356,13 @@ EMSCRIPTEN_KEEPALIVE int addSpotWithAnimation(
     l->decay = decay;
     l->angle = angle;
     l->penumbra = penumbra;
+    l->cosAngle = cosf(angle);
+    l->cosAnglePenumbra = cosf(angle - penumbra);
     l->morton = computeMorton(px, pz);
     l->dirty = DIRTY_ALL;
     l->visible = 1;
     l->lodLevel = LOD_FULL;
-    
+
     // Setup animation
     l->anim.flags = animFlags;
     
@@ -1342,10 +1402,11 @@ EMSCRIPTEN_KEEPALIVE int addSpotWithAnimation(
         l->anim.pulse.target = pulseTarget;
         hasAnimatedLights = 1;
     }
-    
+
+    if (animFlags != ANIM_NONE) animatedLightCount++;
     needsSort = 1;
     hasSpotLights = 1;
-    
+
     return spotLightCount++;
 }
 
@@ -1355,12 +1416,13 @@ EMSCRIPTEN_KEEPALIVE int addRect(float px, float py, float pz,
                                  float r, float g, float b,
                                  float intensity, float decay, float radius) {
     if (rectLightCount >= maxLights) return -1;
-    
+
     RectLight *l = &rectLights[rectLightCount];
     l->baseWorldPos = (Vec4){px, py, pz, radius};
     l->animOffset = (Vec4){0, 0, 0, 0};
     l->worldPos = l->baseWorldPos;
-    l->color = (Vec4){r, g, b, intensity};
+    l->baseColor = (Vec4){r, g, b, intensity};
+    l->color = l->baseColor;
     l->size = (Vec4){width, height, 0.f, 0.f};
     
     float len = sqrtf(nx*nx + ny*ny + nz*nz);
@@ -1406,14 +1468,15 @@ EMSCRIPTEN_KEEPALIVE int addRectWithAnimation(
     float pulseSpeed, float pulseAmount, uint8_t pulseTarget
 ) {
     if (rectLightCount >= maxLights) return -1;
-    
+
     RectLight *l = &rectLights[rectLightCount];
     l->baseWorldPos = (Vec4){px, py, pz, radius};
     l->animOffset = (Vec4){0, 0, 0, 0};
     l->worldPos = l->baseWorldPos;
-    l->color = (Vec4){r, g, b, intensity};
+    l->baseColor = (Vec4){r, g, b, intensity};
+    l->color = l->baseColor;
     l->size = (Vec4){width, height, 0.f, 0.f};
-    
+
     float len = sqrtf(nx*nx + ny*ny + nz*nz);
     float inv = len > 0.f ? 1.f/len : 0.f;
     l->normal = (Vec4){nx*inv, ny*inv, nz*inv, 0.f};
@@ -1469,10 +1532,11 @@ EMSCRIPTEN_KEEPALIVE int addRectWithAnimation(
         l->anim.pulse.target = pulseTarget;
         hasAnimatedLights = 1;
     }
-    
+
+    if (animFlags != ANIM_NONE) animatedLightCount++;
     needsSort = 1;
     hasRectLights = 1;
-    
+
     return rectLightCount++;
 }
 
@@ -1564,6 +1628,8 @@ EMSCRIPTEN_KEEPALIVE int bulkAddPointLights(
                 l->anim.pulse.target = (uint8_t)animParams[ai+13];
                 hasAnimatedLights = 1;
             }
+
+            animatedLightCount++;
         }
 
         added++;
@@ -1667,6 +1733,7 @@ EMSCRIPTEN_KEEPALIVE int bulkAddLights(
                     l->anim.pulse.target = (uint8_t)animParams[ai+13];
                     hasAnimatedLights = 1;
                 }
+                animatedLightCount++;
             }
 
             pointLightCount++;
@@ -1732,6 +1799,7 @@ EMSCRIPTEN_KEEPALIVE int bulkAddLights(
                     l->anim.rotation.mode = (uint8_t)animParams[ai+5];  // Reuse linear.mode slot
                     hasAnimatedLights = 1;
                 }
+                animatedLightCount++;
             }
 
             spotLightCount++;
@@ -1809,6 +1877,7 @@ EMSCRIPTEN_KEEPALIVE int bulkAddLights(
                     l->anim.rotation.mode = (uint8_t)animParams[ai+5];
                     hasAnimatedLights = 1;
                 }
+                animatedLightCount++;
             }
 
             rectLightCount++;
@@ -1828,33 +1897,11 @@ EMSCRIPTEN_KEEPALIVE int bulkAddLights(
 EMSCRIPTEN_KEEPALIVE void removePointLight(int idx) {
     if (idx >= 0 && idx < pointLightCount) {
         if (pointLights[idx].anim.flags != ANIM_NONE) {
-            // Check if this was the last animated light
-            hasAnimatedLights = 0;
-            for (int i = 0; i < pointLightCount; i++) {
-                if (i != idx && pointLights[i].anim.flags != ANIM_NONE) {
-                    hasAnimatedLights = 1;
-                    break;
-                }
-            }
-            if (!hasAnimatedLights) {
-                for (int i = 0; i < spotLightCount; i++) {
-                    if (spotLights[i].anim.flags != ANIM_NONE) {
-                        hasAnimatedLights = 1;
-                        break;
-                    }
-                }
-            }
-            if (!hasAnimatedLights) {
-                for (int i = 0; i < rectLightCount; i++) {
-                    if (rectLights[i].anim.flags != ANIM_NONE) {
-                        hasAnimatedLights = 1;
-                        break;
-                    }
-                }
-            }
+            animatedLightCount--;
+            hasAnimatedLights = (animatedLightCount > 0);
         }
-        
-        memmove(&pointLights[idx], &pointLights[idx+1], 
+
+        memmove(&pointLights[idx], &pointLights[idx+1],
                 (size_t)(pointLightCount - idx - 1) * sizeof(PointLight));
         pointLightCount--;
         needsSort = 1;
@@ -1865,33 +1912,11 @@ EMSCRIPTEN_KEEPALIVE void removePointLight(int idx) {
 EMSCRIPTEN_KEEPALIVE void removeSpotLight(int idx) {
     if (idx >= 0 && idx < spotLightCount) {
         if (spotLights[idx].anim.flags != ANIM_NONE) {
-            // Check if this was the last animated light
-            hasAnimatedLights = 0;
-            for (int i = 0; i < spotLightCount; i++) {
-                if (i != idx && spotLights[i].anim.flags != ANIM_NONE) {
-                    hasAnimatedLights = 1;
-                    break;
-                }
-            }
-            if (!hasAnimatedLights) {
-                for (int i = 0; i < pointLightCount; i++) {
-                    if (pointLights[i].anim.flags != ANIM_NONE) {
-                        hasAnimatedLights = 1;
-                        break;
-                    }
-                }
-            }
-            if (!hasAnimatedLights) {
-                for (int i = 0; i < rectLightCount; i++) {
-                    if (rectLights[i].anim.flags != ANIM_NONE) {
-                        hasAnimatedLights = 1;
-                        break;
-                    }
-                }
-            }
+            animatedLightCount--;
+            hasAnimatedLights = (animatedLightCount > 0);
         }
-        
-        memmove(&spotLights[idx], &spotLights[idx+1], 
+
+        memmove(&spotLights[idx], &spotLights[idx+1],
                 (size_t)(spotLightCount - idx - 1) * sizeof(SpotLight));
         spotLightCount--;
         needsSort = 1;
@@ -1902,30 +1927,8 @@ EMSCRIPTEN_KEEPALIVE void removeSpotLight(int idx) {
 EMSCRIPTEN_KEEPALIVE void removeRectLight(int idx) {
     if (idx >= 0 && idx < rectLightCount) {
         if (rectLights[idx].anim.flags != ANIM_NONE) {
-            // Check if this was the last animated light
-            hasAnimatedLights = 0;
-            for (int i = 0; i < rectLightCount; i++) {
-                if (i != idx && rectLights[i].anim.flags != ANIM_NONE) {
-                    hasAnimatedLights = 1;
-                    break;
-                }
-            }
-            if (!hasAnimatedLights) {
-                for (int i = 0; i < pointLightCount; i++) {
-                    if (pointLights[i].anim.flags != ANIM_NONE) {
-                        hasAnimatedLights = 1;
-                        break;
-                    }
-                }
-            }
-            if (!hasAnimatedLights) {
-                for (int i = 0; i < spotLightCount; i++) {
-                    if (spotLights[i].anim.flags != ANIM_NONE) {
-                        hasAnimatedLights = 1;
-                        break;
-                    }
-                }
-            }
+            animatedLightCount--;
+            hasAnimatedLights = (animatedLightCount > 0);
         }
         
         memmove(&rectLights[idx], &rectLights[idx+1], 
@@ -1986,10 +1989,7 @@ EMSCRIPTEN_KEEPALIVE int update(float time) {
             l->lodLevel = calculateLOD(l->viewPos.z, l->worldPos.w);
             
             // Visibility culling
-            uint8_t culled = 0;
-            if (l->viewPos.z > l->worldPos.w - viewNear || l->viewPos.z < -viewFar - l->worldPos.w) {
-                culled = 1;
-            }
+            uint8_t culled = isLightCulled(&l->viewPos, l->worldPos.w);
             
             // Update texture data
             ld->positionRadius = l->viewPos;
@@ -2028,17 +2028,14 @@ EMSCRIPTEN_KEEPALIVE int update(float time) {
             l->lodLevel = calculateLOD(l->viewPos.z, l->worldPos.w);
             
             // Visibility culling
-            uint8_t culled = 0;
-            if (l->viewPos.z > l->worldPos.w - viewNear || l->viewPos.z < -viewFar - l->worldPos.w) {
-                culled = 1;
-            }
+            uint8_t culled = isLightCulled(&l->viewPos, l->worldPos.w);
             
             ld->positionRadius = l->viewPos;
             ld->colorIntensity = l->color;
             ld->direction = l->viewDir;
             ld->angleParams = (Vec4){
-                cosf(l->angle), 
-                cosf(l->angle - l->penumbra), 
+                l->cosAngle,
+                l->cosAnglePenumbra,
                 l->decay, 
                 packVisibleLOD(l->visible && !culled, l->lodLevel)
             };
@@ -2071,10 +2068,7 @@ EMSCRIPTEN_KEEPALIVE int update(float time) {
             l->lodLevel = calculateLOD(l->viewPos.z, l->worldPos.w);
             
             // Visibility culling
-            uint8_t culled = 0;
-            if (l->viewPos.z > l->worldPos.w - viewNear || l->viewPos.z < -viewFar - l->worldPos.w) {
-                culled = 1;
-            }
+            uint8_t culled = isLightCulled(&l->viewPos, l->worldPos.w);
             
             ld->positionRadius = l->viewPos;
             ld->colorIntensity = l->color;
@@ -2114,10 +2108,7 @@ EMSCRIPTEN_KEEPALIVE int update(float time) {
             // Calculate LOD level
             l->lodLevel = calculateLOD(l->viewPos.z, l->worldPos.w);
             
-            uint8_t culled = 0;
-            if (l->viewPos.z > l->worldPos.w - viewNear || l->viewPos.z < -viewFar - l->worldPos.w) {
-                culled = 1;
-            }
+            uint8_t culled = isLightCulled(&l->viewPos, l->worldPos.w);
             
             ld->positionRadius = l->viewPos;
             ld->colorDecayVisible = (Vec4){
@@ -2150,17 +2141,14 @@ EMSCRIPTEN_KEEPALIVE int update(float time) {
             // Calculate LOD level
             l->lodLevel = calculateLOD(l->viewPos.z, l->worldPos.w);
             
-            uint8_t culled = 0;
-            if (l->viewPos.z > l->worldPos.w - viewNear || l->viewPos.z < -viewFar - l->worldPos.w) {
-                culled = 1;
-            }
+            uint8_t culled = isLightCulled(&l->viewPos, l->worldPos.w);
             
             ld->positionRadius = l->viewPos;
             ld->colorIntensity = l->color;
             ld->direction = l->viewDir;
             ld->angleParams = (Vec4){
-                cosf(l->angle), 
-                cosf(l->angle - l->penumbra), 
+                l->cosAngle,
+                l->cosAnglePenumbra,
                 l->decay, 
                 packVisibleLOD(l->visible && !culled, l->lodLevel)
             };
@@ -2188,10 +2176,7 @@ EMSCRIPTEN_KEEPALIVE int update(float time) {
             // Calculate LOD level
             l->lodLevel = calculateLOD(l->viewPos.z, l->worldPos.w);
             
-            uint8_t culled = 0;
-            if (l->viewPos.z > l->worldPos.w - viewNear || l->viewPos.z < -viewFar - l->worldPos.w) {
-                culled = 1;
-            }
+            uint8_t culled = isLightCulled(&l->viewPos, l->worldPos.w);
             
             ld->positionRadius = l->viewPos;
             ld->colorIntensity = l->color;
@@ -2232,7 +2217,7 @@ EMSCRIPTEN_KEEPALIVE void updateCircularFast(float time) {
             for (int j = 0; j < 8; j++) {
                 if (animMask & (1 << j)) {
                     PointLight *l = &pointLights[i + j];
-                    float phase = time * l->anim.circular.speed + (i + j) * 0.1f;
+                    float phase = time * l->anim.circular.speed;
                     l->worldPos.x = l->baseWorldPos.x + sinf(phase) * l->anim.circular.radius;
                     l->worldPos.z = l->baseWorldPos.z + cosf(phase) * l->anim.circular.radius;
                 }
@@ -2244,7 +2229,7 @@ EMSCRIPTEN_KEEPALIVE void updateCircularFast(float time) {
     for (; i < pointLightCount; i++) {
         PointLight *l = &pointLights[i];
         if (l->anim.flags & ANIM_CIRCULAR) {
-            float phase = time * l->anim.circular.speed + i * 0.1f;
+            float phase = time * l->anim.circular.speed;
             l->worldPos.x = l->baseWorldPos.x + sinf(phase) * l->anim.circular.radius;
             l->worldPos.z = l->baseWorldPos.z + cosf(phase) * l->anim.circular.radius;
         }
@@ -2253,7 +2238,7 @@ EMSCRIPTEN_KEEPALIVE void updateCircularFast(float time) {
     for (int i = 0; i < pointLightCount; i++) {
         PointLight *l = &pointLights[i];
         if (l->anim.flags & ANIM_CIRCULAR) {
-            float phase = time * l->anim.circular.speed + i * 0.1f;
+            float phase = time * l->anim.circular.speed;
             l->worldPos.x = l->baseWorldPos.x + sinf(phase) * l->anim.circular.radius;
             l->worldPos.z = l->baseWorldPos.z + cosf(phase) * l->anim.circular.radius;
         }
@@ -2277,7 +2262,7 @@ EMSCRIPTEN_KEEPALIVE void update##TYPE##LightPosition(int idx, float x, float y,
         array[idx].worldPos.x = x; \
         array[idx].worldPos.y = y; \
         array[idx].worldPos.z = z; \
-        array[idx].morton = computeMorton(x, z); \
+        array[idx].morton = computeMortonAuto(x, y, z); \
         array[idx].dirty |= DIRTY_POSITION; \
         needsSort = 1; \
     } \
@@ -2395,8 +2380,12 @@ EMSCRIPTEN_KEEPALIVE void updatePointLightAnimation(int idx, uint32_t animFlags,
         }
 
         if (animFlags != oldFlags) {
-            if (animFlags != ANIM_NONE) {
+            if (oldFlags == ANIM_NONE && animFlags != ANIM_NONE) {
+                animatedLightCount++;
                 hasAnimatedLights = 1;
+            } else if (oldFlags != ANIM_NONE && animFlags == ANIM_NONE) {
+                animatedLightCount--;
+                hasAnimatedLights = (animatedLightCount > 0);
             }
         }
         l->dirty |= DIRTY_ALL;
@@ -2422,6 +2411,8 @@ EMSCRIPTEN_KEEPALIVE void updateSpotLightAngle(int idx, float angle, float penum
     if (idx >= 0 && idx < spotLightCount) {
         spotLights[idx].angle = angle;
         spotLights[idx].penumbra = penumbra;
+        spotLights[idx].cosAngle = cosf(angle);
+        spotLights[idx].cosAnglePenumbra = cosf(angle - penumbra);
         spotLights[idx].dirty |= DIRTY_PARAMS;
     }
 }
@@ -2478,8 +2469,12 @@ EMSCRIPTEN_KEEPALIVE void updateSpotLightAnimation(int idx, uint32_t animFlags,
         }
 
         if (animFlags != oldFlags) {
-            if (animFlags != ANIM_NONE) {
+            if (oldFlags == ANIM_NONE && animFlags != ANIM_NONE) {
+                animatedLightCount++;
                 hasAnimatedLights = 1;
+            } else if (oldFlags != ANIM_NONE && animFlags == ANIM_NONE) {
+                animatedLightCount--;
+                hasAnimatedLights = (animatedLightCount > 0);
             }
         }
         l->dirty |= DIRTY_ALL;
@@ -2566,8 +2561,12 @@ EMSCRIPTEN_KEEPALIVE void updateRectLightAnimation(int idx, uint32_t animFlags,
         }
 
         if (animFlags != oldFlags) {
-            if (animFlags != ANIM_NONE) {
+            if (oldFlags == ANIM_NONE && animFlags != ANIM_NONE) {
+                animatedLightCount++;
                 hasAnimatedLights = 1;
+            } else if (oldFlags != ANIM_NONE && animFlags == ANIM_NONE) {
+                animatedLightCount--;
+                hasAnimatedLights = (animatedLightCount > 0);
             }
         }
         l->dirty |= DIRTY_ALL;
@@ -2583,6 +2582,7 @@ EMSCRIPTEN_KEEPALIVE void reset(void) {
     rectLightCount = 0;
     needsSort = 0;
     hasAnimatedLights = 0;
+    animatedLightCount = 0;
     hasPointLights = 0;
     hasSpotLights = 0;
     hasRectLights = 0;
@@ -2672,4 +2672,157 @@ EMSCRIPTEN_KEEPALIVE uint8_t getRectLightLOD(int idx) {
         return rectLights[idx].lodLevel;
     }
     return 0;
+}
+
+// ──────────────────────────────────────────────────────────────
+//                   SHADOW SELECTION SYSTEM
+// ──────────────────────────────────────────────────────────────
+
+#define MAX_SHADOW_LIGHTS 88  // Matches atlas capacity: 8×512 + 16×256 + 64×128
+
+typedef struct {
+    int lightType;      // 0=point, 1=spot, 2=rect
+    int lightIndex;     // Index within type array
+    float importance;   // Computed importance score
+    int atlasSlot;      // Which atlas tile this light uses (-1 = unassigned)
+    int stale;          // 1 = needs shadow map re-render this frame
+    float viewX, viewY, viewZ; // Cached view-space position for JS
+    float radius;       // Light radius for JS shadow camera setup
+} ShadowCandidate;
+
+static ShadowCandidate shadowCandidates[MAX_SHADOW_LIGHTS];
+static int shadowCandidateCount = 0;
+static int maxShadowBudget = 8;
+static int shadowsPerFrame = 4;
+
+// Importance scoring: closer + larger radius + higher intensity = more important
+static float computeShadowImportance(float viewZ, float radius, float intensity, float shadowIntensity) {
+    float dist = fabsf(viewZ);
+    if (dist < 0.1f) dist = 0.1f;
+    float screenSize = radius / dist;
+    return screenSize * intensity * shadowIntensity;
+}
+
+EMSCRIPTEN_KEEPALIVE int selectShadowLights(void) {
+    // Temp pool for candidates
+    typedef struct { int type; int idx; float importance; float vx, vy, vz, radius; } Candidate;
+    static Candidate pool[512];
+    int poolCount = 0;
+
+    // Collect shadow-enabled point lights
+    for (int i = 0; i < pointLightCount && poolCount < 512; i++) {
+        PointLight *l = &pointLights[i];
+        if (l->castsShadow && l->visible && l->lodLevel >= LOD_MEDIUM) {
+            pool[poolCount++] = (Candidate){
+                0, i,
+                computeShadowImportance(l->viewPos.z, l->worldPos.w, l->color.w, l->shadowIntensity),
+                l->viewPos.x, l->viewPos.y, l->viewPos.z, l->worldPos.w
+            };
+        }
+    }
+
+    // Collect shadow-enabled spot lights
+    for (int i = 0; i < spotLightCount && poolCount < 512; i++) {
+        SpotLight *l = &spotLights[i];
+        if (l->castsShadow && l->visible && l->lodLevel >= LOD_MEDIUM) {
+            pool[poolCount++] = (Candidate){
+                1, i,
+                computeShadowImportance(l->viewPos.z, l->worldPos.w, l->color.w, l->shadowIntensity),
+                l->viewPos.x, l->viewPos.y, l->viewPos.z, l->worldPos.w
+            };
+        }
+    }
+
+    // Collect shadow-enabled rect lights
+    for (int i = 0; i < rectLightCount && poolCount < 512; i++) {
+        RectLight *l = &rectLights[i];
+        if (l->castsShadow && l->visible && l->lodLevel >= LOD_MEDIUM) {
+            pool[poolCount++] = (Candidate){
+                2, i,
+                computeShadowImportance(l->viewPos.z, l->worldPos.w, l->color.w, l->shadowIntensity),
+                l->viewPos.x, l->viewPos.y, l->viewPos.z, l->worldPos.w
+            };
+        }
+    }
+
+    // Selection sort for top N (N is small, so O(N*pool) is fine)
+    shadowCandidateCount = 0;
+    for (int s = 0; s < maxShadowBudget && s < poolCount; s++) {
+        int bestIdx = -1;
+        float bestScore = -1.0f;
+        for (int i = 0; i < poolCount; i++) {
+            if (pool[i].importance > bestScore) {
+                bestScore = pool[i].importance;
+                bestIdx = i;
+            }
+        }
+        if (bestIdx >= 0 && bestScore > 0.0f) {
+            shadowCandidates[shadowCandidateCount] = (ShadowCandidate){
+                pool[bestIdx].type,
+                pool[bestIdx].idx,
+                pool[bestIdx].importance,
+                -1,     // Atlas slot assigned by JS
+                1,      // Stale = needs render
+                pool[bestIdx].vx, pool[bestIdx].vy, pool[bestIdx].vz,
+                pool[bestIdx].radius
+            };
+            shadowCandidateCount++;
+            pool[bestIdx].importance = -1.0f; // Mark used
+        }
+    }
+
+    return shadowCandidateCount;
+}
+
+// Accessors for JS to read shadow candidate data
+EMSCRIPTEN_KEEPALIVE int getShadowCandidateCount(void) { return shadowCandidateCount; }
+EMSCRIPTEN_KEEPALIVE int getShadowCandidateType(int idx)  { return (idx >= 0 && idx < shadowCandidateCount) ? shadowCandidates[idx].lightType : -1; }
+EMSCRIPTEN_KEEPALIVE int getShadowCandidateIndex(int idx) { return (idx >= 0 && idx < shadowCandidateCount) ? shadowCandidates[idx].lightIndex : -1; }
+EMSCRIPTEN_KEEPALIVE float getShadowCandidateImportance(int idx) { return (idx >= 0 && idx < shadowCandidateCount) ? shadowCandidates[idx].importance : 0.0f; }
+EMSCRIPTEN_KEEPALIVE float getShadowCandidateViewX(int idx) { return (idx >= 0 && idx < shadowCandidateCount) ? shadowCandidates[idx].viewX : 0.0f; }
+EMSCRIPTEN_KEEPALIVE float getShadowCandidateViewY(int idx) { return (idx >= 0 && idx < shadowCandidateCount) ? shadowCandidates[idx].viewY : 0.0f; }
+EMSCRIPTEN_KEEPALIVE float getShadowCandidateViewZ(int idx) { return (idx >= 0 && idx < shadowCandidateCount) ? shadowCandidates[idx].viewZ : 0.0f; }
+EMSCRIPTEN_KEEPALIVE float getShadowCandidateRadius(int idx) { return (idx >= 0 && idx < shadowCandidateCount) ? shadowCandidates[idx].radius : 0.0f; }
+
+// Mutators for JS atlas management
+EMSCRIPTEN_KEEPALIVE void setShadowAtlasSlot(int idx, int slot) { if (idx >= 0 && idx < shadowCandidateCount) shadowCandidates[idx].atlasSlot = slot; }
+EMSCRIPTEN_KEEPALIVE int getShadowAtlasSlot(int idx) { return (idx >= 0 && idx < shadowCandidateCount) ? shadowCandidates[idx].atlasSlot : -1; }
+EMSCRIPTEN_KEEPALIVE void setShadowStale(int idx, int stale) { if (idx >= 0 && idx < shadowCandidateCount) shadowCandidates[idx].stale = stale; }
+EMSCRIPTEN_KEEPALIVE int isShadowStale(int idx) { return (idx >= 0 && idx < shadowCandidateCount) ? shadowCandidates[idx].stale : 0; }
+
+// Configuration
+EMSCRIPTEN_KEEPALIVE void setMaxShadowBudget(int n) { maxShadowBudget = (n > MAX_SHADOW_LIGHTS) ? MAX_SHADOW_LIGHTS : n; }
+EMSCRIPTEN_KEEPALIVE int getMaxShadowBudget(void) { return maxShadowBudget; }
+EMSCRIPTEN_KEEPALIVE void setShadowsPerFrame(int n) { shadowsPerFrame = n; }
+EMSCRIPTEN_KEEPALIVE int getShadowsPerFrame(void) { return shadowsPerFrame; }
+
+// Get shadow intensity for a specific light
+EMSCRIPTEN_KEEPALIVE float getPointLightShadowIntensity(int idx) {
+    return (idx >= 0 && idx < pointLightCount) ? pointLights[idx].shadowIntensity : 0.0f;
+}
+EMSCRIPTEN_KEEPALIVE float getSpotLightShadowIntensity(int idx) {
+    return (idx >= 0 && idx < spotLightCount) ? spotLights[idx].shadowIntensity : 0.0f;
+}
+EMSCRIPTEN_KEEPALIVE float getRectLightShadowIntensity(int idx) {
+    return (idx >= 0 && idx < rectLightCount) ? rectLights[idx].shadowIntensity : 0.0f;
+}
+
+// Enable/disable shadow casting per light
+EMSCRIPTEN_KEEPALIVE void setPointLightShadow(int idx, int castsShadow, float intensity) {
+    if (idx >= 0 && idx < pointLightCount) {
+        pointLights[idx].castsShadow = castsShadow ? 1 : 0;
+        pointLights[idx].shadowIntensity = intensity;
+    }
+}
+EMSCRIPTEN_KEEPALIVE void setSpotLightShadow(int idx, int castsShadow, float intensity) {
+    if (idx >= 0 && idx < spotLightCount) {
+        spotLights[idx].castsShadow = castsShadow ? 1 : 0;
+        spotLights[idx].shadowIntensity = intensity;
+    }
+}
+EMSCRIPTEN_KEEPALIVE void setRectLightShadow(int idx, int castsShadow, float intensity) {
+    if (idx >= 0 && idx < rectLightCount) {
+        rectLights[idx].castsShadow = castsShadow ? 1 : 0;
+        rectLights[idx].shadowIntensity = intensity;
+    }
 }

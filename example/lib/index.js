@@ -18,8 +18,11 @@ export {
 // Cluster-specific GLSL shaders
 export {
   lights_physical_pars_fragment,
+  lights_physical_pars_shadow,
+  lights_physical_pars_stochastic,
   lights_fragment_begin,
   lights_fragment_begin_optimized,
+  lights_fragment_begin_stochastic,
   ShaderVariants,
   getListMaterial,
   getMasterMaterial
@@ -32,6 +35,9 @@ export {
   CPUTimer,
   MemoryMonitor
 } from './performance/performance-metrics.js';
+
+// Shadow atlas for clustered lights
+export { ShadowAtlas } from './core/shadow-atlas.js';
 
 // Visual light markers
 export { LightMarkers } from './visual/light-markers.js';

@@ -14,7 +14,7 @@ try {
   renderer.toneMapping = ACESFilmicToneMapping;
   renderer.toneMappingExposure=0.5;
   renderer.shadowMap.enabled = false; // CRITICAL: Disable built-in shadows (use cluster system instead)
-  renderer.setPixelRatio(window.devicePixelRatio); // Use device's native pixel ratio
+  renderer.setPixelRatio(1);
   renderer.setSize(window.innerWidth, window.innerHeight);
 
   const app = document.getElementById('app');

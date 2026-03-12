@@ -66,13 +66,22 @@ example/
 
 This example showcases:
 
-- ✨ **Multiple light types** (Point, Spot, Rectangle)
-- 🎬 **Various animations** (Circular, Pulse, Flicker, Wave)
-- 📊 **Performance monitoring** with real-time stats
-- 🎨 **Multiple scenes** showing different use cases
-- 🔍 **Visual debugging** with light markers
-- ⚡ **High light counts** (256 to 4,096+ lights)
-- 🎮 **Interactive controls** for tweaking parameters
+- **Multiple light types** (Point, Spot, Rectangle)
+- **Various animations** (Circular, Pulse, Flicker, Wave)
+- **Performance monitoring** with real-time stats
+- **Multiple scenes** showing different use cases
+- **Visual debugging** with light markers
+- **High light counts** (256 to 4,096+ lights)
+- **Interactive controls** for tweaking parameters
+- **Experimental shadows** — screen-space and atlas-based shadow modes
+
+### Scenes
+
+| Scene | Description |
+|-------|-------------|
+| **3D Stress Test** | Sponza model with thousands of bouncing point lights. Supports screen-space shadows with adjustable intensity. |
+| **Shadow Demo** | Dedicated shadow showcase with orbiting lights, budget-based atlas shadows, and temporal caching. |
+| **2D Grid** | Large grid of animated lights for pure clustering performance testing. |
 
 ## 🔧 Technology Stack
 
